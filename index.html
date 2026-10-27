@@ -256,7 +256,7 @@ async function sheetMain(u) {
   let me = getMe() || await askMe(null);
   const keys = (sheet.keys || []).map(x => Array.isArray(x) ? x : [x.k, x.d, x.n]), def = {}, cnt = {};
   keys.forEach(([k, d, n]) => { def[k] = d || ''; cnt[k] = n || 0; });
-  const rows = []; { const map = new Map(); keys.forEach(([k]) => { const i = k.lastIndexOf('.'), r = i < 0 ? k : k.slice(0, i), c = i < 0 ? '값' : k.slice(i + 1); if (!map.has(r)) { map.set(r, []); rows.push(r); } map.get(r).push([c, k]); }); rows.rmap = map; const ci = c => { const x = COLS.indexOf(c); return x < 0 ? 99 : x; }; map.forEach(a => a.sort((x, y) => ci(x[0]) - ci(y[0]))); }
+  const rows = []; { const map = new Map(); keys.forEach(([k]) => { const i = k.lastIndexOf('.'), r = i < 0 ? k : k.slice(0, i), c = i < 0 ? '값' : k.slice(i + 1); if (!map.has(r)) { map.set(r, []); rows.push(r); } map.get(r).push([c, k]); }); rows.rmap = map; const ci = c => { const x = COLS.indexOf(c); return x < 0 ? 99 : x; }; map.forEach(a => a.sort((x, y) => ci(x[0]) - ci(y[0]))); rows.sort((x, y) => x.localeCompare(y, 'ko')); }
   const vals = {}, meta = {}; let closed = isClosed(sheet), timers = {}, inputs = {}, firstSnap = true, pushing = 0;
   const cur = k => vals[k] !== undefined ? vals[k] : def[k];
 
