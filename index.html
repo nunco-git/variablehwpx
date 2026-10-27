@@ -39,6 +39,11 @@ label.chk{display:flex;gap:6px;align-items:center;margin:6px 0}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid var(--line);padding:4px 6px;text-align:left}
 .tw{overflow-x:auto}
 @media(max-width:620px){.item{grid-template-columns:1fr}}
+.pvbox{max-height:480px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px;font-size:13px;margin-top:8px}
+.pvbox .pp{margin:2px 0;overflow-wrap:anywhere}.pvbox table.pt{border-collapse:collapse;margin:6px 0;width:100%;table-layout:auto}.pvbox table.pt td{border:1px solid var(--line);padding:3px 5px;vertical-align:top}
+.chip{background:var(--accs);border:1px solid var(--acc);border-radius:4px;padding:0 3px;cursor:pointer}.chip sup{font-size:9px;color:var(--acc);margin-left:2px}
+.flash{outline:3px solid var(--chgl);background:var(--chg)}
+#vt th,#vt td:nth-child(3),#vt td:nth-child(5),#vt td:nth-child(6){white-space:nowrap}
 </style></head><body>
 <div class="wrap" id="app"><div class="card center">불러오는 중…</div></div>
 <div class="toast" id="toast"></div>
@@ -64,7 +69,7 @@ const FIREBASE_CONFIG = {
 // 관리자(파일 등록자)로 허용할 이메일 도메인. 비워 두면 모든 구글 계정 허용.
 const ADMIN_EMAIL_DOMAINS = [];
 /* ===================================================== */
-const MAX_FILE = 20 * 1024 * 1024, CHUNK = 700000, COLS = ["명", "전화", "팩스", "부서", "담당", "비고"];
+const MAX_FILE = 20 * 1024 * 1024, CHUNK = 700000, COLS = ["명", "담당", "직위", "전화", "팩스", "부서", "비고"];
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let toastT;
@@ -164,7 +169,7 @@ async function processDocs(z,names,vmap,unmode,st,dry){
     if(dry)continue;
     var out=new XMLSerializer().serializeToString(doc);
     if(!/^<\?xml/.test(out))out='<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'+out;
-    z.file(names[i],out);
+    z.file(names[i],out,{createFolders:false});
   }
 }
 
@@ -185,7 +190,7 @@ function flatDefaults(o) {
 async function buildFile(bytes, vmap, unmode) {
   const z = await JSZip.loadAsync(bytes), st = { done: 0, un: {} };
   await processDocs(z, XMLNAMES(z), vmap, unmode, st, false);
-  if (z.file('mimetype')) z.file('mimetype', await z.file('mimetype').async('string'), { compression: 'STORE' });
+  if (z.file('mimetype')) z.file('mimetype', await z.file('mimetype').async('string'), { compression: 'STORE', createFolders: false });
   return { blob: await z.generateAsync({ type: 'blob', mimeType: 'application/hwp+zip', compression: 'DEFLATE' }), st };
 }
 async function loadBytes(id) {
@@ -222,7 +227,7 @@ async function sheetMain(u) {
   let me = getMe() || await askMe(null);
   const keys = sheet.keys || [], def = {}, cnt = {};
   keys.forEach(([k, d, n]) => { def[k] = d || ''; cnt[k] = n || 0; });
-  const rows = []; { const map = new Map(); keys.forEach(([k]) => { const i = k.indexOf('.'), r = i < 0 ? k : k.slice(0, i), c = i < 0 ? '값' : k.slice(i + 1); if (!map.has(r)) { map.set(r, []); rows.push(r); } map.get(r).push([c, k]); }); rows.rmap = map; }
+  const rows = []; { const map = new Map(); keys.forEach(([k]) => { const i = k.lastIndexOf('.'), r = i < 0 ? k : k.slice(0, i), c = i < 0 ? '값' : k.slice(i + 1); if (!map.has(r)) { map.set(r, []); rows.push(r); } map.get(r).push([c, k]); }); rows.rmap = map; const ci = c => { const x = COLS.indexOf(c); return x < 0 ? 99 : x; }; map.forEach(a => a.sort((x, y) => ci(x[0]) - ci(y[0]))); }
   const vals = {}, meta = {}; let closed = isClosed(sheet), timers = {}, inputs = {}, firstSnap = true, pushing = 0;
   const cur = k => vals[k] !== undefined ? vals[k] : def[k];
 
@@ -347,6 +352,326 @@ function adminPanel(u, ref, sheet, C) {
   };
 }
 
+/* ---------- 자동 변수 만들기 (원본 한글 파일 → 변수형) ---------- */
+const HPNS = 'http://www.hancom.co.kr/hwpml/2011/paragraph';
+const NUM_FULL = /^0\d{1,2}-\d{3,4}-\d{4}$/, PH0 = '000-000-0000', FAXH = /팩스|fax|FAX|Fax/;
+const ORG_END = /(과|서|센터|본부|공사|지사|지국|소|청|팀|담당관|실|단|대|협회|병원|의원|회|부|국|원|처|위)$/;
+const TITLES = /^(과장|팀장|주무관|담당|계장|국장|소장|실장|부군수|군수|부서장|담당자|팀원|주사|주사보|서기|서기보|면장|읍장|동장|센터장|단장|반장|대리|사무관|서무)$/;
+const STOPN = new Set(['구분', '비고', '내용', '연락처', '전화', '담당자', '이름', '직위', '직책', '계', '소계', '합계', '기타', '해당없음', '성명']);
+const isPerson = x => /^[가-힣]{3}$/.test(x) && !/(읍|면|동|시|군|과|국|소|서|실|팀|청|원|부|단|반|장)$/.test(x);
+const nrm = s => s.replace(/\s+/g, '');
+const kidsOf = (e, n) => Array.from(e.childNodes).filter(c => c.nodeType === 1 && c.localName === n);
+const hasTbl = tc => tc.getElementsByTagNameNS(HPNS, 'tbl').length > 0;
+function ownerP(t) { let q = t.parentNode; while (q && q.localName !== 'p') q = q.parentNode; return q; }
+function pNodes(p) {
+  const nodes = []; let full = '';
+  const tl = p.getElementsByTagNameNS(HPNS, 't');
+  for (let j = 0; j < tl.length; j++) { if (ownerP(tl[j]) !== p) continue; for (let c = tl[j].firstChild; c; c = c.nextSibling) if (c.nodeType === 3) { nodes.push({ n: c, s: full.length }); full += c.nodeValue; } }
+  return { nodes, full };
+}
+function applySubs(p, subs) {
+  const { nodes } = pNodes(p);
+  for (let r = subs.length - 1; r >= 0; r--) {
+    const [a, b, val] = subs[r]; let first = true;
+    for (const nd of nodes) {
+      const ns = nd.s, ne = ns + nd.n.nodeValue.length; if (ne <= a || ns >= b) continue;
+      const sv = nd.n.nodeValue, la = Math.max(a, ns) - ns, lb = Math.min(b, ne) - ns;
+      nd.n.nodeValue = sv.slice(0, la) + (first ? val : '') + sv.slice(lb); first = false;
+    }
+    let acc = 0; nodes.forEach(nd => { nd.s = acc; acc += nd.n.nodeValue.length; });
+  }
+}
+function setCellText(tc, text) {
+  let done = false;
+  Array.from(tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => pNodes(p).nodes.forEach(nd => {
+    if (!done && nd.n.nodeValue.trim()) { nd.n.nodeValue = text; done = true; } else if (nd.n.nodeValue) nd.n.nodeValue = '';
+  }));
+}
+const cellText = tc => Array.from(tc.getElementsByTagNameNS(HPNS, 'p')).map(p => pNodes(p).full).join('').trim();
+const safeKey = k => k.replace(/[{}]/g, '').replace(/[\/.]/g, '·');
+
+function analyze(docs, minN) {
+  const cells = [];
+  docs.forEach(D => {
+    for (const tbl of Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl'))) {
+      const rows = kidsOf(tbl, 'tr'), faxcols = new Set();
+      rows.slice(0, 3).forEach(r => kidsOf(r, 'tc').forEach(tc => {
+        if (hasTbl(tc)) return; const tx = cellText(tc);
+        if (FAXH.test(tx) && tx.length < 30) {
+          const ad = kidsOf(tc, 'cellAddr')[0], sp = kidsOf(tc, 'cellSpan')[0]; if (!ad) return;
+          const c0 = +ad.getAttribute('colAddr'), w = sp ? +sp.getAttribute('colSpan') : 1; for (let i = 0; i < w; i++) faxcols.add(c0 + i);
+        }
+      }));
+      rows.forEach(r => {
+        const tcs = kidsOf(r, 'tc').filter(tc => !hasTbl(tc)), labels = tcs.map(cellText);
+        tcs.forEach((tc, i) => {
+          const tx = labels[i]; if (!NUM_FULL.test(tx) || tx === PH0) return;
+          const ad = kidsOf(tc, 'cellAddr')[0], col = ad ? +ad.getAttribute('colAddr') : i;
+          const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t)) labs.push(t); }
+          const orgs = labs.filter(t => !isPerson(nrm(t))), base = orgs.length ? orgs[orgs.length - 1] : '';
+          const lab = labs.length && isPerson(nrm(labs[labs.length - 1])) ? (base ? base + '·' : '') + labs[labs.length - 1] : base;
+          cells.push({ tc, val: tx, role: faxcols.has(col) ? '팩스' : '전화', label: lab, hasfax: faxcols.size > 0, row: tcs, labels, i });
+        });
+      });
+    }
+  });
+  const cf = new Set(cells.filter(c => c.hasfax && c.role === '팩스').map(c => c.val)), cp = new Set(cells.filter(c => c.hasfax && c.role === '전화').map(c => c.val));
+  cells.forEach(c => { if (!c.hasfax && cf.has(c.val) && !cp.has(c.val)) c.role = '팩스'; });
+  // 번호 횟수
+  const NUMG = /(?<![\d-])(0\d{1,2}-\d{3,4}-\d{4})(?![\d-])/g, cnt = new Map(), allP = [];
+  docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => {
+    const full = pNodes(p).full; allP.push([p, full]);
+    for (const m of full.matchAll(NUMG)) if (m[1] !== PH0) cnt.set(m[1], (cnt.get(m[1]) || 0) + 1);
+  }));
+  const dupv = new Set([...cnt].filter(([, c]) => c >= minN).map(([v]) => v));
+  const vl = new Map(); cells.forEach(c => { if (dupv.has(c.val) && c.label) { const k = c.val + '|' + c.role; if (!vl.has(k)) vl.set(k, new Map()); const m = vl.get(k); const nl = nrm(c.label); m.set(nl, (m.get(nl) || 0) + 1); } });
+  const used = new Map(), numkey = new Map();
+  const mkkey = (label, role, val) => { const base = label || ('번호' + val.slice(-4)), uk = base + '|' + role; if (!used.has(uk)) used.set(uk, new Map()); const d = used.get(uk); if (d.has(val)) return d.get(val); const k = d.size ? base + '-' + (d.size + 1) : base; d.set(val, k); return k; };
+  [...vl.entries()].sort((a, b) => [...b[1].values()].reduce((x, y) => x + y, 0) - [...a[1].values()].reduce((x, y) => x + y, 0)).forEach(([vr, m]) => { const [v, role] = vr.split('|'); const lab = [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]; numkey.set(vr, mkkey(lab, role, v)); });
+  const keyfor = (v, role) => { const k = v + '|' + role; if (!numkey.has(k)) numkey.set(k, mkkey('', role, v)); return numkey.get(k); };
+  // 부서명
+  const namecnt = new Map(), pf = new Map();
+  cells.forEach(c => { if (!c.label) return; c.label.split(/\s*[\/·]\s*/).forEach(part => { if (!part.trim()) return; const n = nrm(part); namecnt.set(n, (namecnt.get(n) || 0) + 1); if (!pf.has(n)) pf.set(n, new Map()); const f = part.trim().replace(/\s+/g, ' '); pf.get(n).set(f, (pf.get(n).get(f) || 0) + 1); }); });
+  const dupnames = new Set([...namecnt].filter(([n, c]) => c >= minN && n.length >= 4 && ORG_END.test(n) && !isPerson(n) && !STOPN.has(n) && !/[\d()·※\-,:]/.test(n)).map(([n]) => n));
+  const nameform = n => [...pf.get(n).entries()].sort((a, b) => b[1] - a[1])[0][0];
+  // 연산 목록
+  const vars = new Map(), ops = [], cellP = new Set();
+  const addVar = (key, col, def) => { const id = safeKey(key) + '.' + col; if (!vars.has(id)) vars.set(id, { id, key: safeKey(key), col, def, n: 0 }); return vars.get(id); };
+  const idDef = new Map();
+  const addExtra = (key, col, def) => { let k = safeKey(key), id = k + '.' + col, n = 1; while (idDef.has(id) && idDef.get(id) !== def) { n++; id = k + '-' + n + '.' + col; } idDef.set(id, def); if (!vars.has(id)) vars.set(id, { id, key: id.slice(0, id.length - col.length - 1), col, def, n: 0 }); return vars.get(id); };
+  cells.forEach(c => {
+    if (!dupv.has(c.val)) return;
+    const k = keyfor(c.val, c.role), v = addVar(k, c.role, c.val); v.n++;
+    ops.push({ type: 'cell', tc: c.tc, v });
+    Array.from(c.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => cellP.add(p));
+    // 같은 줄에서 이 번호 바로 앞(왼쪽)에 있는 담당자 이름·직위 칸
+    let prev = -1; cells.forEach(o => { if (o.row === c.row && o.i < c.i && o.i > prev) prev = o.i; });
+    for (let j = prev + 1; j < c.i; j++) {
+      const t = c.labels[j], nt = nrm(t), tcj = c.row[j]; if (!t || tcj === c.tc) continue;
+      const ps = Array.from(tcj.getElementsByTagNameNS(HPNS, 'p')); if (ps.length !== 1 || ps.some(p => cellP.has(p))) continue;
+      let col = null; if (TITLES.test(nt)) col = '직위'; else if (isPerson(nt) && !STOPN.has(nt)) col = '담당';
+      if (!col) continue;
+      const xv = addExtra(k, col, t); xv.n++; ops.push({ type: 'cell', tc: tcj, v: xv }); ps.forEach(p => cellP.add(p));
+    }
+  });
+  docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => Array.from(tbl.getElementsByTagNameNS(HPNS, 'tc')).forEach(tc => {
+    if (hasTbl(tc) || !dupnames.size) return; const tx = cellText(tc); if (!tx) return;
+    const ps = Array.from(tc.getElementsByTagNameNS(HPNS, 'p')); if (ps.some(p => cellP.has(p)) || ps.length !== 1) return;
+    const pts = tx.split(/(\s*\/\s*)/).filter(x => x !== '');
+    if (!pts.every(x => dupnames.has(nrm(x)) || /^\s*\/\s*$/.test(x))) return;
+    const parts = pts.map(x => dupnames.has(nrm(x)) ? { raw: x, v: addVar(nrm(x), '명', nameform(nrm(x))) } : { raw: x });
+    parts.forEach(pp => { if (pp.v) pp.v.n++; });
+    ops.push({ type: 'name', tc, parts }); ps.forEach(p => cellP.add(p));
+  })));
+  let NAMERE = null;
+  if (dupnames.size) { const big = [...dupnames].sort((a, b) => b.length - a.length).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'); NAMERE = new RegExp('(?<![가-힣A-Za-z0-9])(' + big + ')(?![가-힣])|(?<![가-힣A-Za-z0-9])(' + big + ')(?=[은는이가을를의와에도로서만])', 'g'); }
+  allP.forEach(([p, full]) => {
+    if (cellP.has(p) || !full) return; const subs = [];
+    for (const m of full.matchAll(NUMG)) { const v = m[1]; if (!dupv.has(v)) continue; const pre = full.slice(Math.max(0, m.index - 10), m.index);
+      let role = /팩스|fax|FAX|Fax|F\.?\s*$|F[:：]\s*$/.test(pre) ? '팩스' : '전화';
+      if (!numkey.has(v + '|' + role)) role = numkey.has(v + '|팩스') && !numkey.has(v + '|전화') ? '팩스' : '전화';
+      const k = keyfor(v, role), vr = addVar(k, role, v); vr.n++; subs.push({ a: m.index, b: m.index + v.length, v: vr }); }
+    if (NAMERE) for (const m of full.matchAll(NAMERE)) { const n = m[1] || m[2], vr = addVar(n, '명', nameform(n)); vr.n++; subs.push({ a: m.index, b: m.index + m[0].length, v: vr }); }
+    if (subs.length) ops.push({ type: 'sub', p, subs });
+  });
+  ops.forEach((o, i) => o.idx = i);
+  return { vars: [...vars.values()], ops, allP, cellP, docs };
+}
+function recount(plan) {
+  plan.vars.forEach(v => v.n = 0);
+  plan.ops.forEach(op => {
+    if (op.off) return;
+    if (op.type === 'cell') op.v.n++;
+    else if (op.type === 'name') op.parts.forEach(p => { if (p.v) p.v.n++; });
+    else op.subs.forEach(s => { if (!s.off) s.v.n++; });
+  });
+}
+function applyPlan(plan, sel) {
+  const tok = v => '{{' + v.id + '}}', counts = new Map();
+  const hit = v => counts.set(v.id, (counts.get(v.id) || 0) + 1);
+  plan.ops.forEach(op => {
+    if (op.off) return;
+    if (op.type === 'cell') { if (sel.has(op.v.id)) { setCellText(op.tc, tok(op.v)); hit(op.v); } }
+    else if (op.type === 'name') { if (op.parts.some(p => p.v && sel.has(p.v.id))) { setCellText(op.tc, op.parts.map(p => p.v && sel.has(p.v.id) ? tok(p.v) : p.raw).join('')); op.parts.forEach(p => { if (p.v && sel.has(p.v.id)) hit(p.v); }); } }
+    else { const subs = op.subs.filter(s => !s.off && sel.has(s.v.id)).sort((x, y) => x.a - y.a); if (subs.length) { applySubs(op.p, subs.map(s => [s.a, s.b, tok(s.v)])); subs.forEach(s => hit(s.v)); } }
+  });
+  return plan.vars.filter(v => counts.has(v.id)).map(v => [v.id, v.def, counts.get(v.id)]);
+}
+async function convertFile(bytes, sel, plan, docs, z) {
+  const keys = applyPlan(plan, sel);
+  for (const D of docs) { let out = new XMLSerializer().serializeToString(D.doc); if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>' + out; z.file(D.name, out, { createFolders: false }); }
+  if (z.file('mimetype')) z.file('mimetype', await z.file('mimetype').async('string'), { compression: 'STORE', createFolders: false });
+  const out = await z.generateAsync({ type: 'uint8array', mimeType: 'application/hwp+zip', compression: 'DEFLATE' });
+  return { bytes: out, keys };
+}
+async function loadDocs(bytes) {
+  const z = await JSZip.loadAsync(bytes), docs = [];
+  for (const n of Object.keys(z.files).filter(n => /^Contents\/section\d+\.xml$/i.test(n)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]))) {
+    const doc = new DOMParser().parseFromString(await z.file(n).async('string'), 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) throw new Error(n + ' 읽기 실패');
+    docs.push({ name: n, doc });
+  }
+  return { z, docs };
+}
+
+/* ---------- 변수 확인·편집 (등록 전 미리보기) ---------- */
+const PV_COLS = ['명', '담당', '직위', '전화', '팩스', '부서', '비고'];
+function startEditor(plan, sel, host, onState) {
+  const docs = plan.docs, fullOf = new Map(plan.allP), pidMap = new Map(), pidList = [];
+  const cellOp = new Map(), subsBy = new Map();
+  const pidOf = p => { if (!pidMap.has(p)) { pidMap.set(p, pidList.length); pidList.push(p); } return pidMap.get(p); };
+  plan.ops.forEach(op => { if (op.type === 'sub') subsBy.set(op.p, op); else cellOp.set(op.tc, op); });
+  let sec = 0, pending = null, filter = '', findPos = -1, findText = '';
+  host.innerHTML = `<div class="card" style="margin-top:12px"><h2 id="evh"></h2>
+    <p class="muted">체크한 항목만 변수로 바뀝니다. 아래 미리보기에서 색이 칠해진 글자가 변수가 될 자리입니다. 칸을 눌러 이 자리만 해제하거나, 글자를 드래그해서 새 변수를 추가할 수 있습니다.</p>
+    <div class="row"><input type="search" id="pf" placeholder="변수 찾기" style="flex:1 1 180px;max-width:260px"><button id="pa" type="button">보이는 것 모두 선택</button><button id="pn" type="button">보이는 것 모두 해제</button><span class="muted" id="ps"></span></div>
+    <div class="tw" style="max-height:300px;overflow:auto;margin-top:8px"><table id="vt"></table></div>
+    <h2 style="margin-top:16px">문서 미리보기</h2>
+    <div class="row"><select id="pvsec" style="font:inherit;padding:6px"></select><input type="search" id="pvq" placeholder="문서에서 글자 찾기" style="flex:1 1 160px;max-width:240px"><button id="pvf" type="button">다음 찾기</button><span class="muted" id="pvm"></span></div>
+    <div id="pvbar" class="warn" style="display:none"></div>
+    <div id="pvbox" class="pvbox"></div></div>`;
+  const $$ = s => host.querySelector(s);
+  const idOk = id => plan.vars.find(v => v.id === id);
+
+  /* --- 변수 표 --- */
+  function drawTable() {
+    recount(plan); plan.vars = plan.vars.filter(v => v.n > 0);
+    const total = plan.vars.reduce((a, v) => a + v.n, 0);
+    $$('#evh').textContent = `찾은 변수 ${plan.vars.length}종 · 문서 ${total}곳`;
+    $$('#vt').innerHTML = '<tr><th></th><th>변수</th><th>종류</th><th>원래 값</th><th>횟수</th><th></th></tr>' + plan.vars.map((v, i) => `<tr data-i="${i}"${filter && !(v.key + v.col + v.def).includes(filter) ? ' hidden' : ''}><td><input type="checkbox" data-id="${esc(v.id)}" ${sel.has(v.id) ? 'checked' : ''}></td><td>${esc(v.key)}</td><td>${esc(v.col)}</td><td>${esc(v.def)}</td><td>${v.n}</td><td><button type="button" data-loc="${esc(v.id)}" style="padding:2px 8px">보기</button></td></tr>`).join('');
+    $$('#ps').textContent = '선택 ' + [...sel].filter(id => idOk(id)).length + ' / ' + plan.vars.length;
+    onState();
+  }
+  const vis = () => Array.from($$('#vt').querySelectorAll('tr[data-i]')).filter(r => !r.hidden);
+  $$('#vt').onchange = e => { const id = e.target.dataset && e.target.dataset.id; if (id === undefined) return; e.target.checked ? sel.add(id) : sel.delete(id); drawTable(); drawPv(); };
+  $$('#vt').onclick = e => { const id = e.target.dataset && e.target.dataset.loc; if (id !== undefined) locate(id); };
+  $$('#pf').oninput = () => { filter = $$('#pf').value.trim(); $$('#vt').querySelectorAll('tr[data-i]').forEach(r => { r.hidden = !!filter && !r.textContent.includes(filter); }); };
+  const all = on => { vis().forEach(r => { const c = r.querySelector('input'); on ? sel.add(c.dataset.id) : sel.delete(c.dataset.id); }); drawTable(); drawPv(); };
+  $$('#pa').onclick = () => all(true); $$('#pn').onclick = () => all(false);
+
+  /* --- 미리보기 그리기 --- */
+  const active = v => sel.has(v.id);
+  const seg = (pid, a, t) => `<span class="seg" data-p="${pid}" data-a="${a}">${esc(t)}</span>`;
+  const chip = (v, txt, attrs) => `<span class="chip" data-v="${esc(v.id)}" title="${esc(v.id)}" ${attrs}>${esc(txt)}<sup>${esc(v.col)}</sup></span>`;
+  function paraHtml(p) {
+    const full = fullOf.has(p) ? fullOf.get(p) : pNodes(p).full; if (!full) return '';
+    const pid = pidOf(p), op = subsBy.get(p); let pos = 0, h = '';
+    const subs = op ? op.subs.filter(s => !s.off && active(s.v)).sort((x, y) => x.a - y.a) : [];
+    subs.forEach(s => { if (s.a > pos) h += seg(pid, pos, full.slice(pos, s.a)); h += chip(s.v, full.slice(s.a, s.b), `data-kind="s" data-p="${pid}" data-a="${s.a}"`); pos = s.b; });
+    if (pos < full.length) h += seg(pid, pos, full.slice(pos));
+    return h;
+  }
+  function blockHtml(p) {
+    let h = ''; const t = paraHtml(p); if (t) h += '<div class="pp">' + t + '</div>';
+    Array.from(p.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => { if (ownerP(tbl) === p) h += tblHtml(tbl); });
+    return h;
+  }
+  function cellHtml(tc) {
+    const op = cellOp.get(tc);
+    if (op && !op.off) {
+      if (op.type === 'cell' && active(op.v)) return chip(op.v, op.v.def, `data-kind="c" data-op="${op.idx}"`);
+      if (op.type === 'name' && op.parts.some(x => x.v && active(x.v))) return op.parts.map(x => x.v && active(x.v) ? chip(x.v, x.raw, `data-kind="n" data-op="${op.idx}"`) : esc(x.raw)).join('');
+    }
+    const sl = kidsOf(tc, 'subList')[0]; return (sl ? kidsOf(sl, 'p') : []).map(blockHtml).join('');
+  }
+  function tblHtml(tbl) {
+    return '<table class="pt">' + kidsOf(tbl, 'tr').map(tr => '<tr>' + kidsOf(tr, 'tc').map(tc => { const sp = kidsOf(tc, 'cellSpan')[0]; const cs = sp ? +sp.getAttribute('colSpan') || 1 : 1, rs = sp ? +sp.getAttribute('rowSpan') || 1 : 1; return `<td${cs > 1 ? ' colspan=' + cs : ''}${rs > 1 ? ' rowspan=' + rs : ''}>${cellHtml(tc)}</td>`; }).join('') + '</tr>').join('') + '</table>';
+  }
+  function drawPv() {
+    const box = $$('#pvbox'), st = box.scrollTop;
+    box.innerHTML = kidsOf(docs[sec].doc.documentElement, 'p').map(blockHtml).join('') || '<p class="muted">이 구역에는 글자가 없습니다.</p>';
+    box.scrollTop = st;
+  }
+  $$('#pvsec').innerHTML = docs.map((d, i) => `<option value="${i}">구역 ${i + 1} / ${docs.length}</option>`).join('');
+  $$('#pvsec').onchange = () => { sec = +$$('#pvsec').value; pending = null; showBar(); drawPv(); };
+  function goSec(i) { sec = i; $$('#pvsec').value = i; drawPv(); }
+  const flash = el => { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); setTimeout(() => el.classList.remove('flash'), 1800); };
+  function locate(id) {
+    const v = idOk(id); if (!v) return;
+    if (!sel.has(id)) { toast('체크가 해제된 변수입니다. 체크하면 미리보기에 표시됩니다.'); return; }
+    let el = null;
+    for (const op of plan.ops) {
+      if (op.off) continue;
+      if (op.type === 'cell' && op.v === v) el = op.tc;
+      else if (op.type === 'name' && op.parts.some(x => x.v === v)) el = op.tc;
+      else if (op.type === 'sub' && op.subs.some(s => !s.off && s.v === v)) el = op.p;
+      if (el) break;
+    }
+    if (!el) return toast('문서에서 위치를 찾지 못했습니다.');
+    const di = docs.findIndex(d => d.doc === el.ownerDocument); goSec(di < 0 ? 0 : di);
+    const c = $$('#pvbox').querySelector('.chip[data-v="' + CSS.escape(id) + '"]'); if (c) flash(c);
+  }
+  /* 문서에서 글자 찾기 */
+  $$('#pvf').onclick = () => {
+    const q = $$('#pvq').value; if (!q) return;
+    if (q !== findText) { findText = q; findPos = -1; }
+    const L = plan.allP; let n = L.length;
+    for (let k = 1; k <= n; k++) { const i = (findPos + k) % n, [p, full] = L[i]; if (full.includes(q)) { findPos = i; const di = docs.findIndex(d => d.doc === p.ownerDocument); if (di !== sec) goSec(di); const pid = pidOf(p); const els = $$('#pvbox').querySelectorAll('.seg[data-p="' + pid + '"]'); const hit = Array.from(els).find(e => e.textContent.includes(q)) || els[0]; $$('#pvm').textContent = (i + 1) + ' / ' + n + '번째 문단'; if (hit) flash(hit); else $$('#pvm').textContent = '변수가 된 자리 안에 있어서 칸 모양으로 보입니다.'; return; } }
+    $$('#pvm').textContent = '찾는 글자가 없습니다.';
+  };
+
+  /* --- 칩 누르기: 해제 --- */
+  $$('#pvbox').addEventListener('click', e => {
+    const c = e.target.closest && e.target.closest('.chip'); if (!c) return;
+    const id = c.dataset.v, v = idOk(id); if (!v) return;
+    const bar = $$('#pvbar'); bar.style.display = 'block'; pending = null;
+    bar.innerHTML = `<b>${esc(v.key)}</b> · ${esc(v.col)} · 원래 값 「${esc(v.def)}」 · 문서 ${v.n}곳 <div class="row" style="margin-top:6px"><button type="button" id="bo">이 자리만 해제</button><button type="button" id="ba">이 변수 전체 해제</button><button type="button" id="bx">닫기</button></div>`;
+    $$('#bo').onclick = () => { if (c.dataset.kind === 's') { const o = subsBy.get(pidList[+c.dataset.p]); const s = o && o.subs.find(x => x.a === +c.dataset.a && !x.off); if (s) s.off = true; } else { const o = plan.ops[+c.dataset.op]; if (o) o.off = true; } bar.style.display = 'none'; drawTable(); drawPv(); };
+    $$('#ba').onclick = () => { sel.delete(id); bar.style.display = 'none'; drawTable(); drawPv(); };
+    $$('#bx').onclick = () => { bar.style.display = 'none'; };
+  });
+
+  /* --- 글자 선택: 새 변수 --- */
+  function showBar(msg) {
+    const bar = $$('#pvbar');
+    if (!pending && !msg) { bar.style.display = 'none'; return; }
+    bar.style.display = 'block';
+    if (!pending) { bar.innerHTML = esc(msg); return; }
+    bar.innerHTML = `선택한 글자: <b>「${esc(pending.text)}」</b> <button type="button" id="bm">변수로 만들기</button>`;
+    $$('#bm').onclick = openForm;
+  }
+  function countAll(text, skipP, skipA) {
+    let n = 0, list = [];
+    plan.allP.forEach(([p, full]) => {
+      if (plan.cellP.has(p) || !full) return;
+      const op = subsBy.get(p), act = op ? op.subs.filter(s => !s.off && active(s.v)) : []; let at = 0, x;
+      while ((x = full.indexOf(text, at)) >= 0) { at = x + text.length; const e = x + text.length; if (act.some(s => x < s.b && e > s.a)) continue; list.push([p, x, e]); n++; }
+    });
+    return { n, list };
+  }
+  function openForm() {
+    const bar = $$('#pvbar'), t = pending.text, c = countAll(t).n;
+    bar.innerHTML = `「${esc(t)}」를 변수로 만듭니다 <div class="row" style="margin-top:6px"><input type="text" id="fk" placeholder="변수 이름 (예: 시설명)" style="flex:1 1 180px" value="${esc(t.length <= 20 ? t : '')}"><select id="fc" style="font:inherit;padding:6px"><option value="">종류 없음(단일 값)</option>${PV_COLS.map(x => `<option>${x}</option>`).join('')}</select></div>
+      <label class="chk"><input type="checkbox" id="fa" checked> 문서 안의 같은 글자도 모두 (${c}곳)</label><div class="row"><button class="pri" type="button" id="fok">추가</button><button type="button" id="fx">취소</button><span class="muted" id="fm"></span></div>`;
+    $$('#fx').onclick = () => { pending = null; showBar(); };
+    $$('#fok').onclick = () => {
+      const key = $$('#fk').value.trim(), col = $$('#fc').value; if (!key) return ($$('#fm').textContent = '변수 이름을 입력해 주세요.');
+      const sk = safeKey(key), id = col ? sk + '.' + col : sk; let v = plan.vars.find(x => x.id === id);
+      if (v && v.def !== t) return ($$('#fm').textContent = '같은 이름의 변수에 다른 값(「' + v.def + '」)이 들어 있습니다. 이름을 바꿔 주세요.');
+      if (!v) { v = { id, key: sk, col: col || '값', def: t, n: 0 }; plan.vars.push(v); }
+      const targets = $$('#fa').checked ? countAll(t).list : [[pending.p, pending.a, pending.b]];
+      targets.forEach(([p, a, b]) => { let op = subsBy.get(p); if (!op) { op = { type: 'sub', p, subs: [], idx: plan.ops.length }; plan.ops.push(op); subsBy.set(p, op); } op.subs.push({ a, b, v }); });
+      sel.add(id); pending = null; $$('#pvbar').style.display = 'none'; drawTable(); drawPv();
+      toast('변수 「' + key + '」를 ' + targets.length + '곳에 만들었습니다.');
+    };
+  }
+  function readSel() {
+    const s = window.getSelection(); if (!s || s.isCollapsed || !s.rangeCount) return null;
+    const r = s.getRangeAt(0), pos = (n, o) => { const el = n.nodeType === 3 ? n.parentElement : n; const sg = el && el.closest ? el.closest('.seg') : null; if (!sg) return null; const len = sg.textContent.length; return { sg, o: n.nodeType === 3 ? o : (o > 0 ? len : 0) }; };
+    const A = pos(r.startContainer, r.startOffset), B = pos(r.endContainer, r.endOffset);
+    if (!A || !B || A.sg.dataset.p !== B.sg.dataset.p) return { err: '한 문단 안의 글자를 드래그해서 선택해 주세요. (표의 칸이나 이미 변수가 된 글자는 따로 선택할 수 없습니다.)' };
+    let a = +A.sg.dataset.a + A.o, b = +B.sg.dataset.a + B.o; if (a > b) [a, b] = [b, a];
+    const p = pidList[+A.sg.dataset.p], full = fullOf.has(p) ? fullOf.get(p) : pNodes(p).full; let text = full.slice(a, b);
+    const lead = text.length - text.trimStart().length; a += lead; text = text.trim(); b = a + text.length;
+    if (!text) return null;
+    const op = subsBy.get(p); if (op && op.subs.some(s => !s.off && active(s.v) && a < s.b && b > s.a)) return { err: '이미 변수가 된 글자와 겹칩니다.' };
+    return { p, a, b, text };
+  }
+  $$('#pvbox').addEventListener('mouseup', e => { if (e.target.closest && e.target.closest('.chip')) return; setTimeout(() => { const r = readSel(); if (!r) { return; } if (r.err) { pending = null; showBar(r.err); } else { pending = r; showBar(); } }, 0); });
+  drawTable(); drawPv();
+  return { redraw: () => { drawTable(); drawPv(); } };
+}
+
 /* ---------- 관리자: 목록 / 새로 만들기 ---------- */
 function msgPage(t, b) { clearSubs(); app.innerHTML = `<div class="card center"><h2>${t}</h2><p>${b}</p></div>`; }
 function adminBar(u) { return `<div class="row" style="margin-bottom:12px"><h1 style="flex:1;margin:0;cursor:pointer" id="home">변수 입력 취합</h1><span class="muted">${esc(u.email || '')}</span><button id="out">로그아웃</button></div>`; }
@@ -366,30 +691,60 @@ async function dashboard(u) {
   } catch (e) { $('#lst').textContent = '불러오지 못했습니다: ' + e.message; }
 }
 function newForm(u) {
-  app.innerHTML = adminBar(u) + `<div class="card" style="max-width:640px"><h2>새 변수 세트 등록</h2>
+  let plan = null, ctx = null, sel = new Set();
+  app.innerHTML = adminBar(u) + `<div class="card" style="max-width:780px"><h2>새 변수 세트 등록</h2>
     <div class="warn"><b>개인정보·보안 사항이 들어 있는 파일은 올리지 마세요.</b> 올린 파일은 Firebase에 저장됩니다.</div>
     <label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 다중운집인파 재난 행동매뉴얼">
-    <label>변수가 들어 있는 한글 파일 (.hwpx, 20MB 이하) — 문서 안의 {{변수.열}} 글자를 자동으로 찾습니다</label><input type="file" id="nf" accept=".hwpx">
-    <label>기본값 파일 (선택, .json) — 변수의 처음 값. 입력기에서 쓰던 형식이면 됩니다</label><input type="file" id="nd" accept=".json">
+    <label>한글 파일 (.hwpx, 20MB 이하)</label><input type="file" id="nf" accept=".hwpx">
+    <label class="chk"><input type="radio" name="nm" value="auto" checked> 변수가 없는 <b>원본 파일</b> — 전화·팩스번호와 부서명을 찾아 자동으로 변수로 바꿉니다</label>
+    <label class="chk"><input type="radio" name="nm" value="has"> 이미 <b>{{변수}}가 들어 있는</b> 파일</label>
+    <div id="o_auto"><label>변수로 만들 기준</label><div class="row"><select id="minN" style="font:inherit;padding:6px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><button id="nfind" type="button">변수 찾기</button></div></div>
+    <div id="o_has" hidden><label>기본값 파일 (선택, .json) — 변수의 처음 값</label><input type="file" id="nd" accept=".json"></div>
+    <div id="prev"></div>
     <label>마감 일시 (선택)</label><input type="datetime-local" id="ndl">
-    <div class="row" style="margin-top:16px"><button class="pri" id="ns">등록하고 링크 만들기</button><button id="nc">취소</button></div><div class="muted" id="np"></div></div>`;
+    <div class="row" style="margin-top:16px"><button class="pri" id="ns" disabled>등록하고 링크 만들기</button><button id="nc">취소</button></div><div class="muted" id="np"></div></div>`;
   bindBar(u); $('#nc').onclick = () => dashboard(u);
+  const mode = () => document.querySelector('input[name=nm]:checked').value;
+  const reset = () => { plan = null; ctx = null; sel = new Set(); $('#prev').innerHTML = ''; $('#ns').disabled = mode() === 'auto'; };
+  const sync = () => { $('#o_auto').hidden = mode() !== 'auto'; $('#o_has').hidden = mode() !== 'has'; reset(); };
+  document.querySelectorAll('input[name=nm]').forEach(r => r.onchange = sync); $('#nf').onchange = reset; $('#minN').onchange = reset; sync();
+  const updNs = () => { $('#ns').disabled = !plan || ![...sel].some(id => plan.vars.some(v => v.id === id)); };
+  $('#nfind').onclick = async () => {
+    const f = $('#nf').files[0]; if (!f) return toast('한글 파일을 선택해 주세요.');
+    if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); if (f.size > MAX_FILE) return toast('파일이 20MB를 넘습니다.');
+    const b = $('#nfind'); b.disabled = true; $('#np').textContent = '문서에서 전화·팩스번호와 부서명을 찾는 중…';
+    try {
+      await new Promise(r => setTimeout(r, 30));
+      ctx = await loadDocs(new Uint8Array(await f.arrayBuffer())); plan = analyze(ctx.docs, +$('#minN').value);
+      if (!plan.vars.length) { plan = null; throw new Error('변수로 만들 번호·부서명을 찾지 못했습니다.'); }
+      sel = new Set(plan.vars.map(v => v.id)); startEditor(plan, sel, $('#prev'), updNs); $('#np').textContent = '';
+    } catch (e) { toast('찾지 못했습니다: ' + e.message); $('#np').textContent = ''; }
+    b.disabled = false;
+  };
   $('#ns').onclick = async () => {
     const f = $('#nf').files[0], title = $('#nt').value.trim(); if (!f) return toast('한글 파일을 선택해 주세요.');
     if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); if (f.size > MAX_FILE) return toast('파일이 20MB를 넘습니다.');
     const btn = $('#ns'); btn.disabled = true; btn.textContent = '등록 중…';
     try {
-      const bytes = new Uint8Array(await f.arrayBuffer()), found = await scanVars(bytes);
-      if (!found.length) throw new Error('{{변수}} 글자를 찾지 못했습니다.');
-      let defs = {}; const df = $('#nd').files[0]; if (df) defs = flatDefaults(JSON.parse(await df.text()));
-      const keys = found.map(([k, n]) => [k, defs[k] || '', n]);
+      let bytes, keys;
+      if (mode() === 'auto') {
+        if (!plan) throw new Error('먼저 「변수 찾기」를 눌러 주세요.');
+        $('#np').textContent = '변수를 문서에 넣는 중…'; await new Promise(r => setTimeout(r, 30));
+        const o = await convertFile(null, sel, plan, ctx.docs, ctx.z); bytes = o.bytes; keys = o.keys; plan = null; ctx = null;
+      } else {
+        bytes = new Uint8Array(await f.arrayBuffer()); const found = await scanVars(bytes);
+        if (!found.length) throw new Error('{{변수}} 글자를 찾지 못했습니다.');
+        let defs = {}; const df = $('#nd').files[0]; if (df) defs = flatDefaults(JSON.parse(await df.text()));
+        keys = found.map(([k, n]) => [k, defs[k] || '', n]);
+      }
+      if (bytes.length > MAX_FILE) throw new Error('변환한 파일이 20MB를 넘습니다.');
       const ref = db.collection('varsets').doc(), b64 = bytesToB64(bytes), n = Math.ceil(b64.length / CHUNK);
       const data = { title: title || f.name.replace(/\.[^.]+$/, ''), fileName: f.name, keys, chunkCount: n, closed: false, ownerUid: u.uid, ownerName: u.displayName || '', createdAt: TS() };
       if ($('#ndl').value) data.deadlineAt = firebase.firestore.Timestamp.fromDate(new Date($('#ndl').value));
       await ref.set(data);
       for (let i = 0; i < n; i++) { $('#np').textContent = '파일 올리는 중 ' + (i + 1) + ' / ' + n; await ref.collection('chunks').doc(String(i).padStart(4, '0')).set({ n: i, d: b64.slice(i * CHUNK, (i + 1) * CHUNK) }); }
       toast('등록되었습니다.'); history.replaceState(null, '', location.pathname + '?s=' + ref.id); location.reload();
-    } catch (e) { toast('등록 실패: ' + e.message); btn.disabled = false; btn.textContent = '등록하고 링크 만들기'; $('#np').textContent = ''; }
+    } catch (e) { toast('등록 실패: ' + e.message); btn.disabled = mode() === 'auto'; btn.textContent = '등록하고 링크 만들기'; $('#np').textContent = ''; if (mode() === 'auto') { plan = null; ctx = null; $('#prev').innerHTML = ''; } }
   };
 }
 
