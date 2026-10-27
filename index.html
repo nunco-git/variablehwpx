@@ -39,7 +39,7 @@ label.chk{display:flex;gap:6px;align-items:center;margin:6px 0}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid var(--line);padding:4px 6px;text-align:left}
 .tw{overflow-x:auto}
 @media(max-width:620px){.item{grid-template-columns:1fr}}
-.pvbox{max-height:480px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px;font-size:13px;margin-top:8px}
+.pvbox{max-height:68vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px;font-size:13px;margin-top:8px}
 .pvbox .pp{margin:2px 0;overflow-wrap:anywhere}.pvbox table.pt{border-collapse:collapse;margin:6px 0;width:100%;table-layout:auto}.pvbox table.pt td{border:1px solid var(--line);padding:3px 5px;vertical-align:top}
 .chip{background:var(--accs);border:1px solid var(--acc);border-radius:4px;padding:0 3px;cursor:pointer}.chip sup{font-size:9px;color:var(--acc);margin-left:2px}
 .flash{outline:3px solid var(--chgl);background:var(--chg)}
@@ -72,6 +72,12 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid 
 .drop-zone .dz-main{font-size:1.15rem;font-weight:700}
 .drop-zone .dz-sub{font-size:.85rem;color:#475569}
 .drop-zone.has{background:#f0fdf4;border-color:#16a34a;color:#166534}
+.ed2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}.edl,.edr{min-width:0}.edr .pvbox{margin-top:8px}
+.nf3{display:grid;grid-template-columns:minmax(180px,1fr) minmax(260px,1.6fr) minmax(200px,auto);gap:12px;align-items:end}
+.nf3>div{min-width:0}.nf3 label{margin-top:0}
+.drop-zone.sm{min-height:0;height:42px;padding:0 12px;margin:0;flex-direction:row;gap:8px;border-radius:8px;overflow:hidden}
+.drop-zone.sm .dz-ico{font-size:1.3rem}.drop-zone.sm .dz-main{font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.drop-zone.sm .dz-sub{display:none}
+@media(max-width:900px){.ed2,.nf3{grid-template-columns:1fr}}
 @media(max-width:700px){.hero{flex-direction:column}.hero-title{flex:none}.steps{grid-template-columns:1fr}}
 </style></head><body>
 <div class="wrap" id="app"><div class="card center">불러오는 중…</div></div>
@@ -120,7 +126,7 @@ db.settings({ ignoreUndefinedProperties: true, experimentalAutoDetectLongPolling
 const TS = firebase.firestore.FieldValue.serverTimestamp;
 const sid = new URLSearchParams(location.search).get('s');
 let subs = [];
-const clearSubs = () => { subs.forEach(f => { try { f() } catch (e) { } }); subs = []; };
+const clearSubs = () => { app.style.maxWidth = ''; subs.forEach(f => { try { f() } catch (e) { } }); subs = []; };
 
 /* ---------- HWPX 변수 처리 ---------- */
 let pairs = [{ f: '', t: '' }, { f: '', t: '' }, { f: '', t: '' }];
@@ -559,12 +565,12 @@ function startEditor(plan, sel, host, onState) {
   let sec = 0, pending = null, filter = '', findPos = -1, findText = '';
   host.innerHTML = `<div class="card" style="margin-top:12px"><h2 id="evh"></h2>
     <p class="muted">체크한 항목만 변수로 바뀝니다. 아래 미리보기에서 색이 칠해진 글자가 변수가 될 자리입니다. 칸을 눌러 이 자리만 해제하거나, 글자를 드래그해서 새 변수를 추가할 수 있습니다.</p>
-    <div class="row"><input type="search" id="pf" placeholder="변수 찾기" style="flex:1 1 180px;max-width:260px"><button id="pa" type="button">보이는 것 모두 선택</button><button id="pn" type="button">보이는 것 모두 해제</button><span class="muted" id="ps"></span></div>
-    <div class="tw" style="max-height:300px;overflow:auto;margin-top:8px"><table id="vt"></table></div>
-    <h2 style="margin-top:16px">문서 미리보기</h2>
+    <div class="ed2"><div class="edl"><div class="row"><input type="search" id="pf" placeholder="변수 찾기" style="flex:1 1 180px;max-width:260px"><button id="pa" type="button">보이는 것 모두 선택</button><button id="pn" type="button">보이는 것 모두 해제</button><span class="muted" id="ps"></span></div>
+    <div class="tw" style="max-height:68vh;overflow:auto;margin-top:8px"><table id="vt"></table></div></div>
+    <div class="edr"><h2>문서 미리보기</h2>
     <div class="row"><select id="pvsec" style="font:inherit;padding:6px"></select><input type="search" id="pvq" placeholder="문서에서 글자 찾기" style="flex:1 1 160px;max-width:240px"><button id="pvf" type="button">다음 찾기</button><span class="muted" id="pvm"></span></div>
     <div id="pvbar" class="warn" style="display:none"></div>
-    <div id="pvbox" class="pvbox"></div></div>`;
+    <div id="pvbox" class="pvbox"></div></div></div></div>`;
   const $$ = s => host.querySelector(s);
   const idOk = id => plan.vars.find(v => v.id === id);
 
@@ -740,15 +746,18 @@ async function dashboard(u) {
   } catch (e) { $('#lst').textContent = '불러오지 못했습니다: ' + e.message; }
 }
 function newForm(u) {
+  clearSubs(); app.style.maxWidth = '1500px';
   let plan = null, ctx = null, sel = new Set();
-  app.innerHTML = adminBar(u) + `<div class="card" style="max-width:780px"><h2>새 변수 세트 등록</h2>
+  app.innerHTML = adminBar(u) + `<div class="card"><h2>새 변수 세트 등록</h2>
     <div class="warn"><b>개인정보·보안 사항이 들어 있는 파일은 올리지 마세요.</b> 올린 파일은 Firebase에 저장됩니다.</div>
-    <label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 다중운집인파 재난 행동매뉴얼">
-    <label>한글 파일 (.hwpx, 20MB 이하)</label><input type="file" id="nf" accept=".hwpx" hidden>
-    <div class="drop-zone" id="dz"><div class="dz-ico">📂</div><div class="dz-main" id="dzm">여기에 한글 파일(.hwpx)을 끌어다 놓거나 클릭해서 선택하세요</div><div class="dz-sub" id="dzs">20MB 이하 · 한 번에 파일 1개</div></div>
+    <div class="nf3">
+      <div><label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 다중운집인파 재난 행동매뉴얼"></div>
+      <div><label>한글 파일 (.hwpx, 20MB 이하)</label><input type="file" id="nf" accept=".hwpx" hidden>
+        <div class="drop-zone sm" id="dz" title="한글 파일(.hwpx)을 끌어다 놓거나 클릭"><div class="dz-ico">📂</div><div class="dz-main" id="dzm">한글 파일(.hwpx)을 끌어다 놓거나 클릭</div><div class="dz-sub" id="dzs"></div></div></div>
+      <div id="o_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:nowrap"><select id="minN" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><button id="nfind" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
+    </div>
     <label class="chk"><input type="radio" name="nm" value="auto" checked> 변수가 없는 <b>원본 파일</b> — 전화·팩스번호와 부서명을 찾아 자동으로 변수로 바꿉니다</label>
     <label class="chk"><input type="radio" name="nm" value="has"> 이미 <b>{{변수}}가 들어 있는</b> 파일</label>
-    <div id="o_auto"><label>변수로 만들 기준</label><div class="row"><select id="minN" style="font:inherit;padding:6px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><button id="nfind" type="button">변수 찾기</button></div></div>
     <div id="o_has" hidden><label>기본값 파일 (선택, .json) — 변수의 처음 값</label><input type="file" id="nd" accept=".json"></div>
     <div id="prev"></div>
     <label>마감 일시 (선택)</label><input type="datetime-local" id="ndl">
@@ -757,7 +766,7 @@ function newForm(u) {
   const mode = () => document.querySelector('input[name=nm]:checked').value;
   const reset = () => { plan = null; ctx = null; sel = new Set(); $('#prev').innerHTML = ''; $('#ns').disabled = mode() === 'auto'; };
   const sync = () => { $('#o_auto').hidden = mode() !== 'auto'; $('#o_has').hidden = mode() !== 'has'; reset(); };
-  const dz = $('#dz'), showF = () => { const f = $('#nf').files[0]; dz.classList.toggle('has', !!f); $('#dzm').textContent = f ? '✅ ' + f.name : '여기에 한글 파일(.hwpx)을 끌어다 놓거나 클릭해서 선택하세요'; $('#dzs').textContent = f ? (f.size / 1048576).toFixed(1) + ' MB · 다른 파일을 올리려면 다시 끌어놓거나 클릭하세요' : '20MB 이하 · 한 번에 파일 1개'; };
+  const dz = $('#dz'), showF = () => { const f = $('#nf').files[0]; dz.classList.toggle('has', !!f); $('#dzm').textContent = f ? '✅ ' + f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)' : '한글 파일(.hwpx)을 끌어다 놓거나 클릭'; dz.title = f ? f.name : ''; };
   dz.onclick = () => $('#nf').click();
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }));
   ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, () => dz.classList.add('highlight')));
