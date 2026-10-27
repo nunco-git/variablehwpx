@@ -402,15 +402,19 @@ function analyze(docs, minN) {
           const c0 = +ad.getAttribute('colAddr'), w = sp ? +sp.getAttribute('colSpan') : 1; for (let i = 0; i < w; i++) faxcols.add(c0 + i);
         }
       }));
+      const allTc = []; rows.forEach(r => kidsOf(r, 'tc').forEach(tc => { const ad = kidsOf(tc, 'cellAddr')[0], sp = kidsOf(tc, 'cellSpan')[0]; if (ad) allTc.push({ tc, ra: +ad.getAttribute('rowAddr'), ca: +ad.getAttribute('colAddr'), rs: sp ? +sp.getAttribute('rowSpan') || 1 : 1 }); }));
       rows.forEach(r => {
-        const tcs = kidsOf(r, 'tc').filter(tc => !hasTbl(tc)), labels = tcs.map(cellText);
+        const own = kidsOf(r, 'tc').filter(tc => !hasTbl(tc)); const o0 = own.length ? kidsOf(own[0], 'cellAddr')[0] : null, ra = o0 ? +o0.getAttribute('rowAddr') : -1;
+        const span = ra < 0 ? [] : allTc.filter(x => x.ra < ra && x.ra + x.rs > ra && !hasTbl(x.tc)).map(x => x.tc);
+        const colOf = tc => { const ad = kidsOf(tc, 'cellAddr')[0]; return ad ? +ad.getAttribute('colAddr') : 0; };
+        const tcs = own.concat(span).sort((x, y) => colOf(x) - colOf(y)), labels = tcs.map(cellText);
         tcs.forEach((tc, i) => {
-          const tx = labels[i]; if (!NUM_FULL.test(tx) || tx === PH0) return;
+          const tx = labels[i]; if (!NUM_FULL.test(tx) || tx === PH0 || span.includes(tc)) return;
           const ad = kidsOf(tc, 'cellAddr')[0], col = ad ? +ad.getAttribute('colAddr') : i;
           const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t)) labs.push(t); }
           const orgs = labs.filter(t => !isPerson(nrm(t))), base = orgs.length ? orgs[orgs.length - 1] : '';
           const lab = labs.length && isPerson(nrm(labs[labs.length - 1])) ? (base ? base + '·' : '') + labs[labs.length - 1] : base;
-          cells.push({ tc, val: tx, role: faxcols.has(col) ? '팩스' : '전화', label: lab, hasfax: faxcols.size > 0, row: tcs, labels, i });
+          cells.push({ tc, val: tx, role: faxcols.has(col) ? '팩스' : '전화', label: lab, base, hasfax: faxcols.size > 0, row: tcs, labels, i });
         });
       });
     }
@@ -433,6 +437,8 @@ function analyze(docs, minN) {
   const namecnt = new Map(), pf = new Map();
   cells.forEach(c => { if (!c.label) return; c.label.split(/\s*[\/·]\s*/).forEach(part => { if (!part.trim()) return; const n = nrm(part); namecnt.set(n, (namecnt.get(n) || 0) + 1); if (!pf.has(n)) pf.set(n, new Map()); const f = part.trim().replace(/\s+/g, ' '); pf.get(n).set(f, (pf.get(n).get(f) || 0) + 1); }); });
   const dupnames = new Set([...namecnt].filter(([n, c]) => c >= minN && n.length >= 4 && ORG_END.test(n) && !isPerson(n) && !STOPN.has(n) && !/[\d()·※\-,:]/.test(n)).map(([n]) => n));
+  const forced = new Set();
+  cells.forEach(c => { if (!dupv.has(c.val) || !c.base) return; c.base.split(/\s*\/\s*/).forEach(part => { const n = nrm(part); if (n.length >= 2 && /[가-힣A-Za-z]/.test(n) && !isPerson(n) && !STOPN.has(n) && !TITLES.test(n) && !/^[\d()·※\-,:]+$/.test(n) && !/\d{2,}/.test(n) && !dupnames.has(n)) { forced.add(n); if (!pf.has(n)) pf.set(n, new Map([[part.trim().replace(/\s+/g, ' '), 1]])); } }); });
   const nameform = n => [...pf.get(n).entries()].sort((a, b) => b[1] - a[1])[0][0];
   // 연산 목록
   const vars = new Map(), ops = [], cellP = new Set();
@@ -455,11 +461,11 @@ function analyze(docs, minN) {
     }
   });
   docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => Array.from(tbl.getElementsByTagNameNS(HPNS, 'tc')).forEach(tc => {
-    if (hasTbl(tc) || !dupnames.size) return; const tx = cellText(tc); if (!tx) return;
+    if (hasTbl(tc) || !(dupnames.size || forced.size)) return; const tx = cellText(tc); if (!tx) return;
     const ps = Array.from(tc.getElementsByTagNameNS(HPNS, 'p')); if (ps.some(p => cellP.has(p)) || ps.length !== 1) return;
     const pts = tx.split(/(\s*\/\s*)/).filter(x => x !== '');
-    if (!pts.every(x => dupnames.has(nrm(x)) || /^\s*\/\s*$/.test(x))) return;
-    const parts = pts.map(x => dupnames.has(nrm(x)) ? { raw: x, v: addVar(nrm(x), '명', nameform(nrm(x))) } : { raw: x });
+    if (!pts.every(x => dupnames.has(nrm(x)) || forced.has(nrm(x)) || /^\s*\/\s*$/.test(x))) return;
+    const parts = pts.map(x => (dupnames.has(nrm(x)) || forced.has(nrm(x))) ? { raw: x, v: addVar(nrm(x), '명', nameform(nrm(x))) } : { raw: x });
     parts.forEach(pp => { if (pp.v) pp.v.n++; });
     ops.push({ type: 'name', tc, parts }); ps.forEach(p => cellP.add(p));
   })));
