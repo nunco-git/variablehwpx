@@ -73,7 +73,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid 
 .drop-zone .dz-sub{font-size:.85rem;color:#475569}
 .drop-zone.has{background:#f0fdf4;border-color:#16a34a;color:#166534}
 .ed2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}.edl,.edr{min-width:0}.edr .pvbox{margin-top:8px}
-.nf3{display:grid;grid-template-columns:minmax(180px,1fr) minmax(260px,1.6fr) minmax(200px,auto);gap:12px;align-items:end}
+.nf3{display:grid;grid-template-columns:minmax(160px,1fr) minmax(220px,1.4fr) minmax(300px,auto);gap:12px;align-items:end}
 .nf3>div{min-width:0}.nf3 label{margin-top:0}
 .drop-zone.sm{min-height:0;height:42px;padding:0 12px;margin:0;flex-direction:row;gap:8px;border-radius:8px;overflow:hidden}
 .drop-zone.sm .dz-ico{font-size:1.3rem}.drop-zone.sm .dz-main{font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.drop-zone.sm .dz-sub{display:none}
@@ -425,7 +425,8 @@ function setCellText(tc, text) {
 const cellText = tc => Array.from(tc.getElementsByTagNameNS(HPNS, 'p')).map(p => pNodes(p).full).join('').trim();
 const safeKey = k => k.replace(/[{}]/g, '').replace(/[\/.]/g, '·');
 
-function analyze(docs, minN) {
+function analyze(docs, minN, around) {
+  if (around === undefined) around = true;
   const cells = [];
   docs.forEach(D => {
     for (const tbl of Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl'))) {
@@ -474,6 +475,18 @@ function analyze(docs, minN) {
   const dupnames = new Set([...namecnt].filter(([n, c]) => c >= minN && n.length >= 4 && ORG_END.test(n) && !isPerson(n) && !STOPN.has(n) && !/[\d()·※\-,:]/.test(n)).map(([n]) => n));
   const forced = new Set();
   cells.forEach(c => { if (!dupv.has(c.val) || !c.base) return; c.base.split(/\s*\/\s*/).forEach(part => { const n = nrm(part); if (n.length >= 2 && /[가-힣A-Za-z]/.test(n) && !isPerson(n) && !STOPN.has(n) && !TITLES.test(n) && !/^[\d()·※\-,:]+$/.test(n) && !/\d{2,}/.test(n) && !dupnames.has(n)) { forced.add(n); if (!pf.has(n)) pf.set(n, new Map([[part.trim().replace(/\s+/g, ' '), 1]])); } }); });
+  if (around) {
+    const okNb = n => n.length >= 2 && n.length <= 25 && /^[가-힣A-Za-z]/.test(n) && !/\d{2,}/.test(n) && !/[:：\n]/.test(n) && !isPerson(n) && !STOPN.has(n) && !TITLES.test(n) && !FAXH.test(n) && !/^(전화|연락처|유선|무선)/.test(n);
+    cells.forEach(c => { if (!dupv.has(c.val)) return;
+      c.row.forEach((tcj, j) => { if (tcj === c.tc || hasTbl(tcj) || kidsOf(tcj, 'subList').length > 1) return;
+        if (Array.from(tcj.getElementsByTagNameNS(HPNS, 'p')).length !== 1) return;
+        (c.labels[j] || '').split(/\s*\/\s*/).forEach(part => { const n = nrm(part); if (!okNb(n) || dupnames.has(n)) return; forced.add(n); if (!pf.has(n)) pf.set(n, new Map([[part.trim().replace(/\s+/g, ' '), 1]])); });
+      }); });
+    allP.forEach(([p, full]) => { for (const m of full.matchAll(NUMG)) { if (!dupv.has(m[1])) continue;
+      const mm = full.slice(Math.max(0, m.index - 40), m.index).match(/([가-힣]{2,20})\s*[(（\[]?\s*(?:☎|전화|TEL|Tel|T)?[.:：]?\s*$/); if (!mm) continue;
+      const n = mm[1]; if (n.length < 3 || !ORG_END.test(n) || isPerson(n) || STOPN.has(n) || TITLES.test(n) || dupnames.has(n)) continue;
+      dupnames.add(n); forced.delete(n); if (!pf.has(n)) pf.set(n, new Map([[n, 1]])); } });
+  }
   const nameform = n => [...pf.get(n).entries()].sort((a, b) => b[1] - a[1])[0][0];
   // 연산 목록
   const vars = new Map(), ops = [], cellP = new Set();
@@ -487,7 +500,8 @@ function analyze(docs, minN) {
     Array.from(c.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => cellP.add(p));
     // 같은 줄에서 이 번호 바로 앞(왼쪽)에 있는 담당자 이름·직위 칸
     let prev = -1; cells.forEach(o => { if (o.row === c.row && o.i < c.i && o.i > prev) prev = o.i; });
-    for (let j = prev + 1; j < c.i; j++) {
+    let next = c.labels.length; cells.forEach(o => { if (o.row === c.row && o.i > c.i && o.i < next) next = o.i; });
+    for (let j = prev + 1; j < (around ? next : c.i); j++) {
       const t = c.labels[j], nt = nrm(t), tcj = c.row[j]; if (!t || tcj === c.tc) continue;
       const ps = Array.from(tcj.getElementsByTagNameNS(HPNS, 'p')); if (ps.length !== 1 || ps.some(p => cellP.has(p))) continue;
       let col = null; if (TITLES.test(nt)) col = '직위'; else if (isPerson(nt) && !STOPN.has(nt)) col = '담당';
@@ -627,20 +641,24 @@ function startEditor(plan, sel, host, onState) {
   $$('#pvsec').onchange = () => { sec = +$$('#pvsec').value; pending = null; showBar(); drawPv(); };
   function goSec(i) { sec = i; $$('#pvsec').value = i; drawPv(); }
   const flash = el => { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); setTimeout(() => el.classList.remove('flash'), 1800); };
+  const locPos = {};
   function locate(id) {
     const v = idOk(id); if (!v) return;
     if (!sel.has(id)) { toast('체크가 해제된 변수입니다. 체크하면 미리보기에 표시됩니다.'); return; }
-    let el = null;
-    for (const op of plan.ops) {
-      if (op.off) continue;
-      if (op.type === 'cell' && op.v === v) el = op.tc;
-      else if (op.type === 'name' && op.parts.some(x => x.v === v)) el = op.tc;
-      else if (op.type === 'sub' && op.subs.some(s => !s.off && s.v === v)) el = op.p;
-      if (el) break;
-    }
-    if (!el) return toast('문서에서 위치를 찾지 못했습니다.');
-    const di = docs.findIndex(d => d.doc === el.ownerDocument); goSec(di < 0 ? 0 : di);
-    const c = $$('#pvbox').querySelector('.chip[data-v="' + CSS.escape(id) + '"]'); if (c) flash(c);
+    const L = [];
+    plan.ops.forEach(op => {
+      if (op.off) return;
+      const di = el => Math.max(0, docs.findIndex(d => d.doc === el.ownerDocument));
+      if (op.type === 'cell' && op.v === v) L.push({ d: di(op.tc), q: '.chip[data-kind="c"][data-op="' + op.idx + '"]' });
+      else if (op.type === 'name') { if (op.parts.some(x => x.v === v)) L.push({ d: di(op.tc), q: '.chip[data-kind="n"][data-op="' + op.idx + '"][data-v="' + CSS.escape(id) + '"]' }); }
+      else if (op.type === 'sub') op.subs.forEach(x => { if (!x.off && x.v === v) L.push({ d: di(op.p), q: '.chip[data-kind="s"][data-p="' + pidOf(op.p) + '"][data-a="' + x.a + '"]' }); });
+    });
+    if (!L.length) return toast('문서에서 위치를 찾지 못했습니다.');
+    L.sort((x, y) => x.d - y.d);
+    const k = ((locPos[id] === undefined ? -1 : locPos[id]) + 1) % L.length; locPos[id] = k;
+    const t = L[k]; if (t.d !== sec) goSec(t.d); else drawPv();
+    const c = $$('#pvbox').querySelector(t.q) || $$('#pvbox').querySelector('.chip[data-v="' + CSS.escape(id) + '"]'); if (c) flash(c);
+    $$('#pvm').textContent = '「' + v.key + '」 ' + (k + 1) + ' / ' + L.length + '번째 (구역 ' + (t.d + 1) + ') — 「보기」를 다시 누르면 다음 위치로 이동합니다.';
   }
   /* 문서에서 글자 찾기 */
   $$('#pvf').onclick = () => {
@@ -754,7 +772,7 @@ function newForm(u) {
       <div><label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 다중운집인파 재난 행동매뉴얼"></div>
       <div><label>한글 파일 (.hwpx, 20MB 이하)</label><input type="file" id="nf" accept=".hwpx" hidden>
         <div class="drop-zone sm" id="dz" title="한글 파일(.hwpx)을 끌어다 놓거나 클릭"><div class="dz-ico">📂</div><div class="dz-main" id="dzm">한글 파일(.hwpx)을 끌어다 놓거나 클릭</div><div class="dz-sub" id="dzs"></div></div></div>
-      <div id="o_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:nowrap"><select id="minN" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><button id="nfind" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
+      <div id="o_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:nowrap"><select id="minN" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="전화·팩스번호가 있는 줄의 앞뒤 칸 단어(부서명·담당자·직위 등)와, 본문에서 번호 앞에 붙은 부서명도 변수로 잡습니다"><input type="checkbox" id="nard" checked>앞뒤 단어도</label><button id="nfind" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
     </div>
     <label class="chk"><input type="radio" name="nm" value="auto" checked> 변수가 없는 <b>원본 파일</b> — 전화·팩스번호와 부서명을 찾아 자동으로 변수로 바꿉니다</label>
     <label class="chk"><input type="radio" name="nm" value="has"> 이미 <b>{{변수}}가 들어 있는</b> 파일</label>
@@ -772,7 +790,7 @@ function newForm(u) {
   ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, () => dz.classList.add('highlight')));
   dz.addEventListener('dragleave', () => dz.classList.remove('highlight'));
   dz.addEventListener('drop', e => { dz.classList.remove('highlight'); const f = e.dataTransfer.files[0]; if (!f) return; if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); const dt = new DataTransfer(); dt.items.add(f); $('#nf').files = dt.files; $('#nf').dispatchEvent(new Event('change')); });
-  document.querySelectorAll('input[name=nm]').forEach(r => r.onchange = sync); $('#nf').onchange = () => { showF(); reset(); }; $('#minN').onchange = reset; sync();
+  document.querySelectorAll('input[name=nm]').forEach(r => r.onchange = sync); $('#nf').onchange = () => { showF(); reset(); }; $('#minN').onchange = reset; $('#nard').onchange = reset; sync();
   const updNs = () => { $('#ns').disabled = !plan || ![...sel].some(id => plan.vars.some(v => v.id === id)); };
   $('#nfind').onclick = async () => {
     const f = $('#nf').files[0]; if (!f) return toast('한글 파일을 선택해 주세요.');
@@ -780,7 +798,7 @@ function newForm(u) {
     const b = $('#nfind'); b.disabled = true; $('#np').textContent = '문서에서 전화·팩스번호와 부서명을 찾는 중…';
     try {
       await new Promise(r => setTimeout(r, 30));
-      ctx = await loadDocs(new Uint8Array(await f.arrayBuffer())); plan = analyze(ctx.docs, +$('#minN').value);
+      ctx = await loadDocs(new Uint8Array(await f.arrayBuffer())); plan = analyze(ctx.docs, +$('#minN').value, $('#nard').checked);
       if (!plan.vars.length) { plan = null; throw new Error('변수로 만들 번호·부서명을 찾지 못했습니다.'); }
       sel = new Set(plan.vars.map(v => v.id)); startEditor(plan, sel, $('#prev'), updNs); $('#np').textContent = '';
     } catch (e) { toast('찾지 못했습니다: ' + e.message); $('#np').textContent = ''; }
