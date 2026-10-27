@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>변수 입력 취합</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<style>
+:root{--bg:#f3f4f1;--card:#fff;--ink:#1c2427;--mut:#667276;--line:#d9ddd7;--acc:#1d5c63;--accs:#e0eeee;--chg:#fff4d6;--chgl:#e3b53c;--ok:#2f7d4f;--bad:#b4472a;--f:"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif}
+@media (prefers-color-scheme:dark){:root{--bg:#14191b;--card:#1c2326;--ink:#e6eaea;--mut:#9aa6a9;--line:#2f393c;--acc:#6fc3cb;--accs:#1f3438;--chg:#3a3216;--chgl:#c9a43a;--ok:#6fcf93;--bad:#ff9a7a;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--f);padding:0 max(16px,env(safe-area-inset-left,0px))}
+.wrap{max-width:1040px;margin:0 auto;padding:14px 0 50px}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:0 0 6px}
+.muted{color:var(--mut);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:12px}
+.center{text-align:center;max-width:520px;margin:60px auto}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input[type=text],input[type=search],input[type=datetime-local],textarea{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 9px;min-width:0}
+textarea{width:100%}
+input:focus,textarea:focus{outline:2px solid var(--acc)}
+button{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}
+button:hover{border-color:var(--acc)}button:disabled{opacity:.5;cursor:default}
+button.pri{background:var(--acc);border-color:var(--acc);color:var(--bg);font-weight:700}
+button.dan{color:var(--bad)}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 2px}
+label.chk{display:flex;gap:6px;align-items:center;margin:6px 0}
+.bar{position:sticky;top:0;z-index:5;background:var(--bg);padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:12px}
+.st{font-size:12px;color:var(--mut);display:inline-flex;gap:6px;align-items:center}
+.st i{width:8px;height:8px;border-radius:50%;background:var(--ok)}.st.busy i{background:var(--chgl)}.st.off i{background:var(--bad)}
+.item{display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:6px 14px;padding:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:6px;margin-bottom:6px}
+.item[hidden]{display:none}
+.nm{overflow-wrap:anywhere;font-weight:500}.nm small{display:block;color:var(--mut);font-weight:400;font-size:12px}
+.f{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px 8px;min-width:0}
+.f label{font-size:11px;margin:0 0 1px}.f input{width:100%}
+.f input.chg{background:var(--chg);border-color:var(--chgl)}
+.who{font-size:11px;color:var(--mut);min-height:15px;overflow-wrap:anywhere}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:30;padding:16px}
+.modal .box{background:var(--card);border-radius:10px;padding:18px;width:min(420px,100%);max-height:90vh;overflow:auto}
+.warn{background:var(--chg);border:1px solid var(--chgl);border-radius:6px;padding:8px 10px;font-size:13px;margin:8px 0}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:20px;background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;font-size:13px;z-index:40;display:none}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid var(--line);padding:4px 6px;text-align:left}
+.tw{overflow-x:auto}
+@media(max-width:620px){.item{grid-template-columns:1fr}}
+</style></head><body>
+<div class="wrap" id="app"><div class="card center">불러오는 중…</div></div>
+<div class="toast" id="toast"></div>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+/* ================= 설정 (여기만 수정) =================
+ * 기존 「링크 입력 취합」과 같은 Firebase 프로젝트를 그대로 씁니다.
+ * 필요 설정: Authentication의 "익명"·"Google" 로그인 사용, 승인된 도메인에 github.io 포함,
+ *           Firestore 규칙에 함께 제공한 firestore.rules.add 내용을 추가(기존 규칙은 지우지 마세요).
+ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD8uE0nKQKMCOlYY-pYRSz7lgvw3GmWoJs",
+  authDomain: "hwpxexcelonmerge.firebaseapp.com",
+  projectId: "hwpxexcelonmerge",
+  storageBucket: "hwpxexcelonmerge.firebasestorage.app",
+  messagingSenderId: "263087970580",
+  appId: "1:263087970580:web:929ec1cb0e7673e7974a01",
+  measurementId: "G-PDV5E6LSM3"
+};
+// 관리자(파일 등록자)로 허용할 이메일 도메인. 비워 두면 모든 구글 계정 허용.
+const ADMIN_EMAIL_DOMAINS = [];
+/* ===================================================== */
+const MAX_FILE = 20 * 1024 * 1024, CHUNK = 700000, COLS = ["명", "전화", "팩스", "부서", "담당", "비고"];
+const $ = s => document.querySelector(s), app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let toastT;
+function toast(m) { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(toastT); toastT = setTimeout(() => t.style.display = 'none', 3200); }
+function fmt(ts) { if (!ts) return '방금'; const d = ts.toDate ? ts.toDate() : new Date(ts); return d.toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+function hid(k) { let a = 0xdeadbeef, b = 0x41c6ce57; for (let i = 0; i < k.length; i++) { const c = k.charCodeAt(i); a = Math.imul(a ^ c, 2654435761); b = Math.imul(b ^ c, 1597334677); } a = Math.imul(a ^ (a >>> 16), 2246822507) ^ Math.imul(b ^ (b >>> 13), 3266489909); b = Math.imul(b ^ (b >>> 16), 2246822507) ^ Math.imul(a ^ (a >>> 13), 3266489909); return 'k' + ((a >>> 0).toString(16) + (b >>> 0).toString(16)).padStart(16, '0') + k.length.toString(36); }
+const bytesToB64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+const b64ToBytes = b => { const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; };
+function dlBlob(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
+const isClosed = s => s.closed === true || (s.deadlineAt && s.deadlineAt.toDate() < new Date());
+
+if (!window.firebase || !FIREBASE_CONFIG.apiKey) {
+  app.innerHTML = '<div class="card center"><h2>Firebase 설정이 필요합니다</h2><p>파일 상단의 <b>FIREBASE_CONFIG</b>에 Firebase 웹앱 설정값을 넣은 뒤 다시 열어 주세요.</p></div>';
+  throw new Error('no config');
+}
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth(), db = firebase.firestore();
+db.settings({ ignoreUndefinedProperties: true, experimentalAutoDetectLongPolling: true, merge: true });
+const TS = firebase.firestore.FieldValue.serverTimestamp;
+const sid = new URLSearchParams(location.search).get('s');
+let subs = [];
+const clearSubs = () => { subs.forEach(f => { try { f() } catch (e) { } }); subs = []; };
+
+/* ---------- HWPX 변수 처리 ---------- */
+let pairs = [{ f: '', t: '' }, { f: '', t: '' }, { f: '', t: '' }];
+function replaceInDoc(doc,vmap,unmode,stat){
+  var HP="http://www.hancom.co.kr/hwpml/2011/paragraph";
+  var ps=doc.getElementsByTagNameNS(HP,"p");
+  for(var i=0;i<ps.length;i++){
+    var p=ps[i],ts=[];
+    var tl=p.getElementsByTagNameNS(HP,"t");
+    for(var j=0;j<tl.length;j++){var q=tl[j].parentNode;while(q&&q.localName!=="p")q=q.parentNode;if(q===p)ts.push(tl[j])}
+    if(!ts.length)continue;
+    var nodes=[],full="";
+    ts.forEach(function(t){for(var c=t.firstChild;c;c=c.nextSibling){if(c.nodeType===3){nodes.push({n:c,s:full.length});full+=c.nodeValue}}});
+    if(full.indexOf("{{")<0)continue;
+    var re=/\{\{([^{}]+)\}\}/g,m,reps=[];
+    while((m=re.exec(full))){var k=m[1].trim();var v=vmap[k];var has=v!==undefined&&String(v).trim()!=="";
+      if(has){reps.push([m.index,m.index+m[0].length,String(v)]);stat.done++}
+      else{stat.un[k]=(stat.un[k]||0)+1;if(unmode==="blank")reps.push([m.index,m.index+m[0].length,""])}}
+    // 뒤에서부터 적용
+    for(var r=reps.length-1;r>=0;r--){
+      var a=reps[r][0],b=reps[r][1],val=reps[r][2],first=true;
+      for(var u=0;u<nodes.length;u++){
+        var nd=nodes[u],ns=nd.s,ne=ns+nd.n.nodeValue.length;
+        if(ne<=a||ns>=b)continue;
+        var s=nd.n.nodeValue,la=Math.max(a,ns)-ns,lb=Math.min(b,ne)-ns;
+        nd.n.nodeValue=s.slice(0,la)+(first?val:"")+s.slice(lb);
+        first=false;
+      }
+      // 위치 재계산
+      var acc=0;nodes.forEach(function(nd){nd.s=acc;acc+=nd.n.nodeValue.length});
+    }
+  }
+}
+
+function replacePairs(doc,list,stat){
+  var HP="http://www.hancom.co.kr/hwpml/2011/paragraph";
+  var ps=doc.getElementsByTagNameNS(HP,"p");
+  for(var i=0;i<ps.length;i++){
+    var p=ps[i];
+    for(var pi=0;pi<list.length;pi++){
+      var f=list[pi].f,tv=list[pi].t;
+      var ts=[],tl=p.getElementsByTagNameNS(HP,"t");
+      for(var j=0;j<tl.length;j++){var q=tl[j].parentNode;while(q&&q.localName!=="p")q=q.parentNode;if(q===p)ts.push(tl[j])}
+      if(!ts.length)break;
+      var nodes=[],full="";
+      ts.forEach(function(t){for(var c=t.firstChild;c;c=c.nextSibling){if(c.nodeType===3){nodes.push({n:c,s:full.length});full+=c.nodeValue}}});
+      var reps=[],at=0,x;
+      while((x=full.indexOf(f,at))>=0){reps.push([x,x+f.length]);at=x+f.length}
+      if(!reps.length)continue;
+      stat.pairs[list[pi].idx]=(stat.pairs[list[pi].idx]||0)+reps.length;
+      if(stat.dry)continue;
+      for(var r=reps.length-1;r>=0;r--){
+        var a=reps[r][0],b=reps[r][1],first=true;
+        for(var u=0;u<nodes.length;u++){
+          var nd=nodes[u],ns=nd.s,ne=ns+nd.n.nodeValue.length;
+          if(ne<=a||ns>=b)continue;
+          var sv=nd.n.nodeValue,la=Math.max(a,ns)-ns,lb=Math.min(b,ne)-ns;
+          nd.n.nodeValue=sv.slice(0,la)+(first?tv:"")+sv.slice(lb);first=false;
+        }
+        var acc=0;nodes.forEach(function(nd){nd.s=acc;acc+=nd.n.nodeValue.length});
+      }
+    }
+  }
+}
+function activePairs(){var o=[];pairs.forEach(function(p,i){if(p.f!=="")o.push({f:p.f,t:p.t,idx:i})});return o}
+async function processDocs(z,names,vmap,unmode,st,dry){
+  var list=activePairs();st.pairs=st.pairs||{};st.dry=dry;
+  for(var i=0;i<names.length;i++){
+    var txt=await z.file(names[i]).async("string");
+    if(txt.indexOf("{{")<0&&!list.length)continue;
+    var doc=new DOMParser().parseFromString(txt,"application/xml");
+    if(doc.getElementsByTagName("parsererror").length)throw new Error(names[i]+" 읽기 실패");
+    if(txt.indexOf("{{")>=0)replaceInDoc(doc,vmap,unmode,st);
+    if(list.length)replacePairs(doc,list,st);
+    if(dry)continue;
+    var out=new XMLSerializer().serializeToString(doc);
+    if(!/^<\?xml/.test(out))out='<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'+out;
+    z.file(names[i],out);
+  }
+}
+
+const XMLNAMES = z => Object.keys(z.files).filter(n => /^Contents\/(section|header|masterpage)[^\/]*\.xml$/i.test(n));
+async function scanVars(bytes) {
+  const z = await JSZip.loadAsync(bytes), seen = new Map();
+  for (const n of XMLNAMES(z).sort()) {
+    const x = (await z.file(n).async('string')).replace(/<[^>]+>/g, '');
+    (x.match(/\{\{[^{}]+\}\}/g) || []).forEach(t => { const k = t.slice(2, -2).trim(); seen.set(k, (seen.get(k) || 0) + 1); });
+  }
+  return [...seen.entries()];
+}
+function flatDefaults(o) {
+  const f = {};
+  Object.keys(o || {}).forEach(k => { const v = o[k]; if (v && typeof v === 'object') Object.keys(v).forEach(c => { f[k + '.' + c] = String(v[c]); }); else if (typeof v === 'string') f[k] = v; });
+  return f;
+}
+async function buildFile(bytes, vmap, unmode) {
+  const z = await JSZip.loadAsync(bytes), st = { done: 0, un: {} };
+  await processDocs(z, XMLNAMES(z), vmap, unmode, st, false);
+  if (z.file('mimetype')) z.file('mimetype', await z.file('mimetype').async('string'), { compression: 'STORE' });
+  return { blob: await z.generateAsync({ type: 'blob', mimeType: 'application/hwp+zip', compression: 'DEFLATE' }), st };
+}
+async function loadBytes(id) {
+  const snap = await db.collection('varsets').doc(id).collection('chunks').orderBy('n').get();
+  let s = ''; snap.forEach(d => s += d.data().d); return b64ToBytes(s);
+}
+
+/* ---------- 입력자 정보 ---------- */
+function getMe() { try { return JSON.parse(localStorage.getItem('vs_me') || 'null'); } catch (e) { return null; } }
+function askMe(prev) {
+  return new Promise(res => {
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div class="box"><h2>입력자 정보</h2><p class="muted">고친 칸마다 이 정보가 기록됩니다.</p>
+      <label>이름</label><input type="text" id="mi_n" style="width:100%" value="${esc(prev && prev.name || '')}">
+      <label>소속(부서)</label><input type="text" id="mi_d" style="width:100%" value="${esc(prev && prev.dept || '')}">
+      <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="pri" id="mi_ok">확인</button></div></div>`;
+    document.body.appendChild(m);
+    $('#mi_ok').onclick = () => {
+      const name = $('#mi_n').value.trim(), dept = $('#mi_d').value.trim();
+      if (!name) return toast('이름을 입력해 주세요.'); if (!dept) return toast('소속을 입력해 주세요.');
+      const me = { name, dept }; try { localStorage.setItem('vs_me', JSON.stringify(me)); } catch (e) { } m.remove(); res(me);
+    };
+  });
+}
+
+/* ---------- 입력 화면 (관리자·입력자 공용) ---------- */
+async function sheetMain(u) {
+  clearSubs(); app.innerHTML = '<div class="card center">불러오는 중…</div>';
+  const ref = db.collection('varsets').doc(sid);
+  let snap; try { snap = await ref.get(); } catch (e) { return msgPage('열 수 없습니다', '링크가 올바르지 않거나 접근 권한이 없습니다.'); }
+  if (!snap.exists) return msgPage('열 수 없습니다', '존재하지 않거나 삭제된 링크입니다.');
+  let sheet = { id: sid, ...snap.data() };
+  const isAdmin = !u.isAnonymous && sheet.ownerUid === u.uid;
+  let me = getMe() || await askMe(null);
+  const keys = sheet.keys || [], def = {}, cnt = {};
+  keys.forEach(([k, d, n]) => { def[k] = d || ''; cnt[k] = n || 0; });
+  const rows = []; { const map = new Map(); keys.forEach(([k]) => { const i = k.indexOf('.'), r = i < 0 ? k : k.slice(0, i), c = i < 0 ? '값' : k.slice(i + 1); if (!map.has(r)) { map.set(r, []); rows.push(r); } map.get(r).push([c, k]); }); rows.rmap = map; }
+  const vals = {}, meta = {}; let closed = isClosed(sheet), timers = {}, inputs = {}, firstSnap = true, pushing = 0;
+  const cur = k => vals[k] !== undefined ? vals[k] : def[k];
+
+  app.innerHTML = `<div class="bar"><div class="row"><h1 style="flex:1 1 200px;margin:0">${esc(sheet.title)}</h1><span class="muted">${esc(me.name)} · ${esc(me.dept)}</span><button id="chg">입력자 변경</button>${isAdmin ? '<button id="home">← 내 목록</button>' : ''}</div>
+    <div class="row" style="margin-top:8px"><input type="search" id="flt" placeholder="찾기 (예: 소방, 041-830)" style="flex:1 1 200px;max-width:320px"><label class="chk" style="margin:0"><input type="checkbox" id="onlyChg"> 바뀐 것만</label>${u.isAnonymous?'<button id="adl">관리자 로그인</button>':''}<span class="st busy" id="st"><i></i><span id="stt">연결 중…</span></span></div>
+    <div class="muted" id="sum" style="margin-top:4px"></div></div>
+    ${closed ? '<div class="warn">마감된 링크입니다. 지금은 입력할 수 없습니다.</div>' : ''}
+    <div id="adm"></div><div id="list"></div>`;
+  if (u.isAnonymous) $('#adl').onclick = () => auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).then(() => location.reload()).catch(e => toast('로그인 실패: ' + e.message));
+  $('#chg').onclick = async () => { me = await askMe(me); app.querySelector('.bar .muted').textContent = me.name + ' · ' + me.dept; };
+  if (isAdmin) $('#home').onclick = () => { history.replaceState(null, '', location.pathname); dashboard(u); };
+  const setSt = (k, t) => { $('#st').className = 'st ' + k; $('#stt').textContent = t; };
+
+  $('#list').innerHTML = rows.map(r => {
+    const cs = rows.rmap.get(r), n = cs.reduce((a, [, k]) => a + (cnt[k] || 0), 0);
+    return `<div class="item" data-r="${esc(r)}"><div class="nm">${esc(r)}<small>문서 ${n}곳</small></div><div class="f">${cs.map(([c, k]) => `<div><label for="i_${hid(k)}">${esc(c)}</label><input type="text" id="i_${hid(k)}" data-k="${esc(k)}" value="${esc(cur(k))}" ${closed && !isAdmin ? 'disabled' : ''}><div class="who" data-w="${esc(k)}"></div></div>`).join('')}</div></div>`;
+  }).join('');
+  app.querySelectorAll('#list input[data-k]').forEach(i => inputs[i.dataset.k] = i);
+
+  function refresh() {
+    const q = $('#flt').value.trim(), only = $('#onlyChg').checked; let shown = 0, chg = 0;
+    app.querySelectorAll('#list .item').forEach(it => {
+      let hit = !q, ch = false;
+      it.querySelectorAll('input[data-k]').forEach(i => {
+        const k = i.dataset.k, isC = cur(k) !== def[k];
+        if (document.activeElement !== i) i.value = cur(k);
+        i.classList.toggle('chg', isC); if (isC) { ch = true; chg++; }
+        if (q && (it.dataset.r.includes(q) || String(cur(k)).includes(q))) hit = true;
+        const w = it.querySelector('[data-w="' + CSS.escape(k) + '"]'), m = meta[k];
+        if (w) w.textContent = m && m.name ? m.name + (m.dept ? ' · ' + m.dept : '') + ' · ' + fmt(m.at) : '';
+      });
+      const show = hit && (!only || ch); it.hidden = !show; if (show) shown++;
+    });
+    $('#sum').textContent = `항목 ${rows.length}개 중 ${shown}개 표시 · 바뀐 칸 ${chg}개 · 변수 ${keys.length}종`;
+  }
+  async function push(k) {
+    const v = vals[k]; if (v === undefined) return;
+    pushing++; setSt('busy', '저장 중…');
+    const rec = { k, v, by: u.uid, name: me.name, dept: me.dept, at: TS() };
+    try {
+      await ref.collection('vals').doc(hid(k)).set(rec);
+      ref.collection('log').add({ k, prev: meta[k] ? '' : def[k], v, by: u.uid, name: me.name, dept: me.dept, at: TS() }).catch(() => { });
+      pushing--; if (!pushing) setSt('', '공유 중');
+    } catch (e) {
+      pushing--; console.error(e);
+      setSt('off', '저장 실패'); toast('저장하지 못했습니다' + (e.code === 'permission-denied' ? ' (마감되었거나 권한이 없습니다)' : ''));
+    }
+  }
+  $('#list').addEventListener('input', e => {
+    const t = e.target, k = t.dataset && t.dataset.k; if (!k) return;
+    vals[k] = t.value; t.classList.toggle('chg', t.value !== def[k]);
+    clearTimeout(timers[k]); timers[k] = setTimeout(() => { delete timers[k]; push(k); }, 600);
+    setSt('busy', '저장 중…');
+  });
+  $('#flt').oninput = refresh; $('#onlyChg').onchange = refresh;
+  subs.push(ref.collection('vals').onSnapshot(s => {
+    const apply = d => { const x = d.data(); if (!x || !(x.k in def)) return; if (document.activeElement === inputs[x.k] && timers[x.k]) return; vals[x.k] = x.v; meta[x.k] = { name: x.name, dept: x.dept, at: x.at }; };
+    if (firstSnap) { firstSnap = false; s.docs.forEach(d => apply(d)); }
+    else s.docChanges().forEach(c => { if (c.type === 'removed') { const x = c.doc.data(); if (x) { delete vals[x.k]; delete meta[x.k]; } } else apply(c.doc); });
+    refresh(); if (!pushing) setSt('', '공유 중');
+  }, e => setSt('off', '연결이 끊겼습니다')));
+  refresh();
+  if (isAdmin) adminPanel(u, ref, sheet, { vals, cur, def, keys, refresh, getMe: () => me, rows, meta });
+}
+
+/* ---------- 관리자 패널 ---------- */
+function adminPanel(u, ref, sheet, C) {
+  const link = location.origin + location.pathname + '?s=' + sheet.id;
+  $('#adm').innerHTML = `<div class="card"><h2>관리자</h2>
+    <label>입력자에게 보낼 링크</label><div class="row"><input type="text" id="lk" readonly style="flex:1 1 300px" value="${esc(link)}"><button id="cp">복사</button></div>
+    <div class="row" style="margin-top:10px"><button id="tg">${isClosed(sheet) ? '마감 해제' : '지금 마감'}</button><button id="sv">입력값 저장(JSON)</button><button id="ld">입력값 불러오기</button><input type="file" id="fl" accept=".json" hidden><button id="lg">변경 이력</button><button class="dan" id="dl">삭제</button></div>
+    <div id="logbox"></div>
+    <h2 style="margin-top:16px">한글 파일 만들기</h2>
+    <p class="muted">입력된 값(없으면 기본값)을 문서의 모든 변수 자리에 한 번에 넣습니다.</p>
+    <div class="row"><label class="chk"><input type="radio" name="un" value="keep" checked> 비운 변수는 글자 그대로</label><label class="chk"><input type="radio" name="un" value="blank"> 비운 변수는 지움</label></div>
+    <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">찾아 바꾸기 (변수가 없는 글자)</summary><div id="frs" style="margin-top:6px"></div><div class="row"><button id="frAdd">+ 줄 추가</button><button id="frCount">몇 곳인지 세기</button><span class="muted" id="frStat"></span></div></details>
+    <div class="row" style="margin-top:12px"><button class="pri" id="mk">한글 파일 만들기</button><span class="muted" id="res"></span></div></div>`;
+  const rp = () => { $('#frs').innerHTML = pairs.map((p, i) => `<div class="row" style="margin-bottom:6px"><input type="text" data-pf="${i}" placeholder="찾을 글자" style="flex:1 1 200px" value="${esc(p.f)}">→<input type="text" data-pt="${i}" placeholder="바꿀 글자 (비우면 삭제)" style="flex:1 1 200px" value="${esc(p.t)}"><span class="muted" id="frn${i}"></span></div>`).join(''); };
+  rp();
+  $('#adm').addEventListener('input', e => { const t = e.target; if (t.dataset.pf !== undefined) pairs[+t.dataset.pf].f = t.value; if (t.dataset.pt !== undefined) pairs[+t.dataset.pt].t = t.value; });
+  $('#frAdd').onclick = () => { pairs.push({ f: '', t: '' }); rp(); };
+  const vmap = () => { const m = {}; C.keys.forEach(([k]) => m[k] = C.cur(k)); return m; };
+  let bytes = null; const getBytes = async () => bytes || (bytes = await loadBytes(sheet.id));
+  $('#frCount').onclick = async () => {
+    $('#frStat').textContent = '세는 중…';
+    try { const z = await JSZip.loadAsync(await getBytes()), st = { done: 0, un: {} }; await processDocs(z, XMLNAMES(z), vmap(), $('input[name=un]:checked').value, st, true); let t = 0; pairs.forEach((p, i) => { const el = $('#frn' + i); if (!el) return; if (p.f === '') { el.textContent = ''; return; } const n = st.pairs[i] || 0; t += n; el.textContent = n + '곳'; }); $('#frStat').textContent = '합계 ' + t + '곳'; }
+    catch (e) { $('#frStat').textContent = '세지 못했습니다: ' + e.message; }
+  };
+  $('#mk').onclick = async () => {
+    const r = $('#res'); r.textContent = '만드는 중…'; $('#mk').disabled = true;
+    try {
+      const o = await buildFile(await getBytes(), vmap(), $('input[name=un]:checked').value);
+      dlBlob(o.blob, sheet.title.replace(/[\\\/:*?"<>|]/g, '_') + '_반영본.hwpx');
+      const un = Object.keys(o.st.un), pc = Object.values(o.st.pairs || {}).reduce((a, b) => a + b, 0);
+      r.textContent = o.st.done + '곳에 값을 넣었습니다.' + (pc ? ' 찾아 바꾸기 ' + pc + '곳.' : '') + (un.length ? ' 비운 변수 ' + un.length + '종.' : '');
+    } catch (e) { r.textContent = '만들지 못했습니다: ' + e.message; }
+    $('#mk').disabled = false;
+  };
+  $('#cp').onclick = () => { $('#lk').select(); (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject()).then(() => toast('링크를 복사했습니다.'), () => { try { document.execCommand('copy'); toast('링크를 복사했습니다.'); } catch (e) { } }); };
+  $('#tg').onclick = async () => { const c = !(sheet.closed === true); await ref.update({ closed: c }); toast(c ? '마감했습니다.' : '마감을 해제했습니다.'); sheet.closed = c; sheetMain(u); };
+  $('#sv').onclick = () => { const o = vmap(); dlBlob(new Blob([JSON.stringify(o, null, 1)], { type: 'application/json' }), '변수입력값.json'); };
+  $('#ld').onclick = () => $('#fl').click();
+  $('#fl').onchange = e => {
+    const f = e.target.files[0]; if (!f) return; const rd = new FileReader();
+    rd.onload = async () => {
+      try {
+        const o = flatDefaults(JSON.parse(rd.result)), me = C.getMe(); let n = 0, b = db.batch(), c = 0;
+        for (const k of Object.keys(o)) { if (!(k in C.def) || o[k] === C.cur(k)) continue; b.set(ref.collection('vals').doc(hid(k)), { k, v: o[k], by: u.uid, name: me.name, dept: me.dept, at: TS() }); n++; if (++c >= 400) { await b.commit(); b = db.batch(); c = 0; } }
+        if (c) await b.commit(); toast(n + '칸을 반영했습니다.');
+      } catch (x) { toast('불러올 수 없는 파일입니다.'); }
+    }; rd.readAsText(f); e.target.value = '';
+  };
+  $('#lg').onclick = async () => {
+    const box = $('#logbox'); box.innerHTML = '<p class="muted">불러오는 중…</p>';
+    const s = await ref.collection('log').orderBy('at', 'desc').limit(200).get();
+    box.innerHTML = `<div class="tw"><table><tr><th>시각</th><th>변수</th><th>값</th><th>입력자</th></tr>${s.docs.map(d => { const x = d.data(); return `<tr><td>${fmt(x.at)}</td><td>${esc(x.k)}</td><td>${esc(x.v)}</td><td>${esc(x.name || '')} ${esc(x.dept || '')}</td></tr>`; }).join('') || '<tr><td colspan="4">기록이 없습니다.</td></tr>'}</table></div><p class="muted">최근 200건</p>`;
+  };
+  $('#dl').onclick = async () => {
+    if (!confirm('이 변수 세트와 입력된 값을 모두 삭제합니다. 되돌릴 수 없습니다.')) return;
+    for (const c of ['vals', 'log', 'chunks']) for (; ;) { const s = await ref.collection(c).limit(400).get(); if (s.empty) break; const b = db.batch(); s.docs.forEach(d => b.delete(d.ref)); await b.commit(); }
+    await ref.delete(); toast('삭제했습니다.'); history.replaceState(null, '', location.pathname); dashboard(u);
+  };
+}
+
+/* ---------- 관리자: 목록 / 새로 만들기 ---------- */
+function msgPage(t, b) { clearSubs(); app.innerHTML = `<div class="card center"><h2>${t}</h2><p>${b}</p></div>`; }
+function adminBar(u) { return `<div class="row" style="margin-bottom:12px"><h1 style="flex:1;margin:0;cursor:pointer" id="home">변수 입력 취합</h1><span class="muted">${esc(u.email || '')}</span><button id="out">로그아웃</button></div>`; }
+function bindBar(u) { $('#out').onclick = () => auth.signOut(); $('#home').onclick = () => dashboard(u); }
+async function loginPage() {
+  app.innerHTML = `<div class="card center"><h2>변수 입력 취합</h2><p class="muted">한글 문서의 <b>{{변수}}</b> 값(부서명·전화·팩스 등)을 여러 명이 링크로 함께 입력하고, 한 번에 문서에 반영합니다.<br>파일을 등록하는 관리자는 구글 로그인이 필요하고, 입력자는 받은 링크로 바로 입력합니다.</p><button class="pri" id="gl">Google로 로그인</button></div>`;
+  $('#gl').onclick = () => auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e => toast('로그인 실패: ' + e.message));
+}
+async function dashboard(u) {
+  clearSubs(); app.innerHTML = adminBar(u) + '<div class="card"><div class="row"><h2 style="flex:1;margin:0">내 변수 세트</h2><button class="pri" id="nw">+ 새로 등록</button></div><div id="lst" style="margin-top:10px">불러오는 중…</div></div>'; bindBar(u);
+  $('#nw').onclick = () => newForm(u);
+  try {
+    const s = await db.collection('varsets').where('ownerUid', '==', u.uid).get();
+    const L = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt ? b.createdAt.seconds : 0) - (a.createdAt ? a.createdAt.seconds : 0));
+    $('#lst').innerHTML = L.length ? L.map(x => `<div class="item" style="grid-template-columns:1fr auto"><div><b>${esc(x.title)}</b><div class="muted">변수 ${(x.keys || []).length}종 · ${esc(x.fileName || '')}${isClosed(x) ? ' · 마감' : ''}</div></div><button data-id="${x.id}">열기</button></div>`).join('') : '<p class="muted">등록된 변수 세트가 없습니다.</p>';
+    $('#lst').querySelectorAll('button[data-id]').forEach(b => b.onclick = () => { history.replaceState(null, '', location.pathname + '?s=' + b.dataset.id); location.reload(); });
+  } catch (e) { $('#lst').textContent = '불러오지 못했습니다: ' + e.message; }
+}
+function newForm(u) {
+  app.innerHTML = adminBar(u) + `<div class="card" style="max-width:640px"><h2>새 변수 세트 등록</h2>
+    <div class="warn"><b>개인정보·보안 사항이 들어 있는 파일은 올리지 마세요.</b> 올린 파일은 Firebase에 저장됩니다.</div>
+    <label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 다중운집인파 재난 행동매뉴얼">
+    <label>변수가 들어 있는 한글 파일 (.hwpx, 20MB 이하) — 문서 안의 {{변수.열}} 글자를 자동으로 찾습니다</label><input type="file" id="nf" accept=".hwpx">
+    <label>기본값 파일 (선택, .json) — 변수의 처음 값. 입력기에서 쓰던 형식이면 됩니다</label><input type="file" id="nd" accept=".json">
+    <label>마감 일시 (선택)</label><input type="datetime-local" id="ndl">
+    <div class="row" style="margin-top:16px"><button class="pri" id="ns">등록하고 링크 만들기</button><button id="nc">취소</button></div><div class="muted" id="np"></div></div>`;
+  bindBar(u); $('#nc').onclick = () => dashboard(u);
+  $('#ns').onclick = async () => {
+    const f = $('#nf').files[0], title = $('#nt').value.trim(); if (!f) return toast('한글 파일을 선택해 주세요.');
+    if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); if (f.size > MAX_FILE) return toast('파일이 20MB를 넘습니다.');
+    const btn = $('#ns'); btn.disabled = true; btn.textContent = '등록 중…';
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer()), found = await scanVars(bytes);
+      if (!found.length) throw new Error('{{변수}} 글자를 찾지 못했습니다.');
+      let defs = {}; const df = $('#nd').files[0]; if (df) defs = flatDefaults(JSON.parse(await df.text()));
+      const keys = found.map(([k, n]) => [k, defs[k] || '', n]);
+      const ref = db.collection('varsets').doc(), b64 = bytesToB64(bytes), n = Math.ceil(b64.length / CHUNK);
+      const data = { title: title || f.name.replace(/\.[^.]+$/, ''), fileName: f.name, keys, chunkCount: n, closed: false, ownerUid: u.uid, ownerName: u.displayName || '', createdAt: TS() };
+      if ($('#ndl').value) data.deadlineAt = firebase.firestore.Timestamp.fromDate(new Date($('#ndl').value));
+      await ref.set(data);
+      for (let i = 0; i < n; i++) { $('#np').textContent = '파일 올리는 중 ' + (i + 1) + ' / ' + n; await ref.collection('chunks').doc(String(i).padStart(4, '0')).set({ n: i, d: b64.slice(i * CHUNK, (i + 1) * CHUNK) }); }
+      toast('등록되었습니다.'); history.replaceState(null, '', location.pathname + '?s=' + ref.id); location.reload();
+    } catch (e) { toast('등록 실패: ' + e.message); btn.disabled = false; btn.textContent = '등록하고 링크 만들기'; $('#np').textContent = ''; }
+  };
+}
+
+/* ---------- 시작 ---------- */
+auth.onAuthStateChanged(u => {
+  if (sid) {
+    if (!u) { auth.signInAnonymously().catch(e => msgPage('접속 오류', '익명 로그인을 사용할 수 없습니다. 관리자에게 문의해 주세요.<br>' + esc(e.message))); return; }
+    sheetMain(u); return;
+  }
+  if (!u || u.isAnonymous) { loginPage(); return; }
+  if (ADMIN_EMAIL_DOMAINS.length && !ADMIN_EMAIL_DOMAINS.some(d => (u.email || '').endsWith('@' + d))) { msgPage('권한이 없습니다', '허용된 이메일 도메인이 아닙니다.'); return; }
+  dashboard(u);
+});
+</script></body></html>
