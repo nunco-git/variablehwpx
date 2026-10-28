@@ -77,6 +77,9 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid 
 .nf3>div{min-width:0}.nf3 label{margin-top:0}
 .drop-zone.sm{min-height:0;height:42px;padding:0 12px;margin:0;flex-direction:row;gap:8px;border-radius:8px;overflow:hidden}
 .drop-zone.sm .dz-ico{font-size:1.3rem}.drop-zone.sm .dz-main{font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.drop-zone.sm .dz-sub{display:none}
+.fchip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:3px 6px 3px 12px;font-size:12.5px;cursor:pointer;max-width:100%}
+.fchip .fn{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.fchip .fs{color:var(--mut);white-space:nowrap}
+.fchip.on{background:#fff7ed;border-color:#fdba74}.fchip button{border:0;background:none;padding:0 6px;color:var(--mut);font-size:12px}.fchip button:hover{color:var(--bad)}
 @media(max-width:900px){.ed2,.nf3{grid-template-columns:1fr}}
 @media(max-width:700px){.hero{flex-direction:column}.hero-title{flex:none}.steps{grid-template-columns:1fr}}
 </style></head><body>
@@ -260,7 +263,7 @@ async function sheetMain(u) {
   let sheet = { id: sid, ...snap.data() };
   const isAdmin = !u.isAnonymous && sheet.ownerUid === u.uid;
   let me = getMe() || await askMe(null);
-  const keys = (sheet.keys || []).map(x => Array.isArray(x) ? x : [x.k, x.d, x.n]), def = {}, cnt = {};
+  const keys = normKeys(sheet.keys).map(e => [e.k, e.d, e.n]), def = {}, cnt = {};
   keys.forEach(([k, d, n]) => { def[k] = d || ''; cnt[k] = n || 0; });
   const rows = []; { const map = new Map(); keys.forEach(([k]) => { const i = k.lastIndexOf('.'), r = i < 0 ? k : k.slice(0, i), c = i < 0 ? '값' : k.slice(i + 1); if (!map.has(r)) { map.set(r, []); rows.push(r); } map.get(r).push([c, k]); }); rows.rmap = map; const ci = c => { const x = COLS.indexOf(c); return x < 0 ? 99 : x; }; map.forEach(a => a.sort((x, y) => ci(x[0]) - ci(y[0]))); rows.sort((x, y) => x.localeCompare(y, 'ko')); }
   const vals = {}, meta = {}; let closed = isClosed(sheet), timers = {}, inputs = {}, firstSnap = true, pushing = 0;
@@ -325,7 +328,7 @@ async function sheetMain(u) {
     refresh(); if (!pushing) setSt('', '공유 중');
   }, e => setSt('off', '연결이 끊겼습니다')));
   refresh();
-  if (isAdmin) adminPanel(u, ref, sheet, { vals, cur, def, keys, refresh, getMe: () => me, rows, meta });
+  if (isAdmin) adminPanel(u, ref, sheet, { files: normFiles(sheet), vals, cur, def, keys, refresh, getMe: () => me, rows, meta });
 }
 
 /* ---------- 관리자 패널 ---------- */
@@ -335,8 +338,10 @@ function adminPanel(u, ref, sheet, C) {
     <label>입력자에게 보낼 링크</label><div class="row"><input type="text" id="lk" readonly style="flex:1 1 300px" value="${esc(link)}"><button id="cp">복사</button></div>
     <div class="row" style="margin-top:10px"><button id="tg">${isClosed(sheet) ? '마감 해제' : '지금 마감'}</button><button id="sv">입력값 저장(JSON)</button><button id="ld">입력값 불러오기</button><input type="file" id="fl" accept=".json" hidden><button id="lg">변경 이력</button><button class="dan" id="dl">삭제</button></div>
     <div id="logbox"></div>
+    <h2 style="margin-top:16px">파일 <span class="muted" id="fcnt"></span></h2>
+    <div id="fls"></div><div class="row" style="margin-top:6px"><button id="fadd" type="button">+ 파일 추가</button></div><div id="fwiz"></div>
     <h2 style="margin-top:16px">한글 파일 만들기</h2>
-    <p class="muted">입력된 값(없으면 기본값)을 문서의 모든 변수 자리에 한 번에 넣습니다.</p>
+    <p class="muted" id="mkdesc">입력된 값(없으면 각 파일의 원래 값)을 모든 파일의 변수 자리에 한 번에 넣습니다.</p>
     <div class="row"><label class="chk"><input type="radio" name="un" value="keep" checked> 비운 변수는 글자 그대로</label><label class="chk"><input type="radio" name="un" value="blank"> 비운 변수는 지움</label></div>
     <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">찾아 바꾸기 (변수가 없는 글자)</summary><div id="frs" style="margin-top:6px"></div><div class="row"><button id="frAdd">+ 줄 추가</button><button id="frCount">몇 곳인지 세기</button><span class="muted" id="frStat"></span></div></details>
     <div class="row" style="margin-top:12px"><button class="pri" id="mk">한글 파일 만들기</button><span class="muted" id="res"></span></div></div>`;
@@ -345,19 +350,55 @@ function adminPanel(u, ref, sheet, C) {
   $('#adm').addEventListener('input', e => { const t = e.target; if (t.dataset.pf !== undefined) pairs[+t.dataset.pf].f = t.value; if (t.dataset.pt !== undefined) pairs[+t.dataset.pt].t = t.value; });
   $('#frAdd').onclick = () => { pairs.push({ f: '', t: '' }); rp(); };
   const vmap = () => { const m = {}; C.keys.forEach(([k]) => m[k] = C.cur(k)); return m; };
-  let bytes = null; const getBytes = async () => bytes || (bytes = await loadBytes(sheet.id));
+  let files = C.files; const bcache = {};
+  const getBytes = async f => bcache[f.id + ':' + (f.rev || 0)] || (bcache[f.id + ':' + (f.rev || 0)] = await loadFileBytes(sheet.id, f));
+  const fileVmap = f => { const m = {}; f.keys.forEach(e => { const uk = ukOf(f, e.k); m[e.k] = C.vals[uk] !== undefined ? C.vals[uk] : e.d; }); return m; };
+  const drawFiles = () => {
+    $('#fcnt').textContent = '(' + files.length + '개)'; $('#mkdesc').textContent = files.length > 1 ? '입력된 값(없으면 각 파일의 원래 값)을 모든 파일의 변수 자리에 한 번에 넣고, 파일별 .hwpx를 ZIP 하나로 묶어 내려받습니다.' : '입력된 값(없으면 기본값)을 문서의 모든 변수 자리에 한 번에 넣습니다.';
+    $('#fls').innerHTML = files.map(f => `<div class="item" style="grid-template-columns:1fr auto"><div class="nm">${esc(f.name)}<small>변수 ${f.keys.length}종 · 문서 ${f.keys.reduce((a, e) => a + (e.n || 0), 0)}곳${Object.keys(f.map || {}).length ? ' · 따로 둔 변수 ' + Object.keys(f.map).length + '종' : ''}</small></div><div class="row"><button data-rp="${esc(f.id)}" type="button">교체</button>${files.length > 1 ? `<button class="dan" data-rm="${esc(f.id)}" type="button">삭제</button>` : ''}</div></div>`).join('');
+  };
+  drawFiles();
+  const wiz = (replaceId) => {
+    const box = $('#fwiz'); box.innerHTML = `<div class="card" style="margin-top:8px"><h2>${replaceId ? '파일 교체 — ' + esc(files.find(f => f.id === replaceId).name) : '파일 추가'}</h2><p class="muted">${replaceId ? '고쳐진 원본 파일을 올리면 이 파일만 바뀌고, 다른 파일과 입력된 값은 그대로 유지됩니다.' : '새 파일의 변수를 찾아 기존 변수와 이름이 같은 것은 한 칸으로 합칩니다.'}</p><div id="wz"></div><div class="row" style="margin-top:12px"><button class="pri" id="wzok" disabled type="button">${replaceId ? '교체하기' : '추가하기'}</button><button id="wzx" type="button">취소</button></div></div>`;
+    const w = prepWidget($('#wz'), { multi: !replaceId, onState: r => { const b = $('#wzok'); if (b) b.disabled = !r; } });
+    $('#wzx').onclick = () => { box.innerHTML = ''; };
+    $('#wzok').onclick = async () => {
+      const b = $('#wzok'); b.disabled = true;
+      try {
+        const items = await w.convertAll();
+        const upd = await commitChange(ref, sheet, items, replaceId, (n, a, t, i, k) => w.msg('올리는 중 (' + i + '/' + k + ') ' + n + ' ' + a + '/' + t));
+        sheet.files = upd.files; sheet.keys = upd.keys; sheet.fileName = upd.fileName; toast('반영했습니다.'); sheetMain(u);
+      } catch (e) { toast('실패: ' + e.message); w.msg(''); b.disabled = false; }
+    };
+  };
+  $('#fadd').onclick = () => wiz(null);
+  $('#fls').onclick = async e => {
+    const rp = e.target.closest('[data-rp]'), rm = e.target.closest('[data-rm]');
+    if (rp) wiz(rp.dataset.rp);
+    if (rm) { const f = files.find(x => x.id === rm.dataset.rm); if (!confirm('「' + f.name + '」을(를) 이 세트에서 뺍니다. 다른 파일과 입력된 값은 유지됩니다.')) return; try { const upd = await removeFile(ref, sheet, f.id); sheet.files = upd.files; sheet.keys = upd.keys; sheet.fileName = upd.fileName; toast('뺐습니다.'); sheetMain(u); } catch (x) { toast('실패: ' + x.message); } }
+  };
   $('#frCount').onclick = async () => {
     $('#frStat').textContent = '세는 중…';
-    try { const z = await JSZip.loadAsync(await getBytes()), st = { done: 0, un: {} }; await processDocs(z, XMLNAMES(z), vmap(), $('input[name=un]:checked').value, st, true); let t = 0; pairs.forEach((p, i) => { const el = $('#frn' + i); if (!el) return; if (p.f === '') { el.textContent = ''; return; } const n = st.pairs[i] || 0; t += n; el.textContent = n + '곳'; }); $('#frStat').textContent = '합계 ' + t + '곳'; }
+    try { const tot = {}; for (const f of files) { const z = await JSZip.loadAsync(await getBytes(f)), st = { done: 0, un: {} }; await processDocs(z, XMLNAMES(z), fileVmap(f), $('input[name=un]:checked').value, st, true); Object.keys(st.pairs || {}).forEach(i => tot[i] = (tot[i] || 0) + st.pairs[i]); } let t = 0; pairs.forEach((p, i) => { const el = $('#frn' + i); if (!el) return; if (p.f === '') { el.textContent = ''; return; } const n = tot[i] || 0; t += n; el.textContent = n + '곳'; }); $('#frStat').textContent = '합계 ' + t + '곳'; }
     catch (e) { $('#frStat').textContent = '세지 못했습니다: ' + e.message; }
   };
   $('#mk').onclick = async () => {
     const r = $('#res'); r.textContent = '만드는 중…'; $('#mk').disabled = true;
     try {
-      const o = await buildFile(await getBytes(), vmap(), $('input[name=un]:checked').value);
-      dlBlob(o.blob, sheet.title.replace(/[\\\/:*?"<>|]/g, '_') + '_반영본.hwpx');
-      const un = Object.keys(o.st.un), pc = Object.values(o.st.pairs || {}).reduce((a, b) => a + b, 0);
-      r.textContent = o.st.done + '곳에 값을 넣었습니다.' + (pc ? ' 찾아 바꾸기 ' + pc + '곳.' : '') + (un.length ? ' 비운 변수 ' + un.length + '종.' : '');
+      const um = $('input[name=un]:checked').value, outs = []; let done = 0, pc = 0; const un = new Set();
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]; r.textContent = '만드는 중… (' + (i + 1) + '/' + files.length + ') ' + f.name;
+        const o = await buildFile(await getBytes(f), fileVmap(f), um); outs.push({ f, blob: o.blob });
+        done += o.st.done; pc += Object.values(o.st.pairs || {}).reduce((a, b) => a + b, 0); Object.keys(o.st.un).forEach(k => un.add(k));
+      }
+      const safe = x => x.replace(/[\\\/:*?"<>|]/g, '_');
+      if (outs.length === 1) dlBlob(outs[0].blob, safe(outs[0].f.name.replace(/\.hwpx$/i, '')) + '_반영본.hwpx');
+      else {
+        const zip = new JSZip(), used = new Set();
+        outs.forEach(({ f, blob }) => { let n = safe(f.name.replace(/\.hwpx$/i, '')) + '_반영본.hwpx', c = 2; while (used.has(n)) n = safe(f.name.replace(/\.hwpx$/i, '')) + '_반영본(' + (c++) + ').hwpx'; used.add(n); zip.file(n, blob, { compression: 'STORE', createFolders: false }); });
+        dlBlob(await zip.generateAsync({ type: 'blob' }), safe(sheet.title) + '_반영본.zip');
+      }
+      r.textContent = outs.length + '개 파일, ' + done + '곳에 값을 넣었습니다.' + (pc ? ' 찾아 바꾸기 ' + pc + '곳.' : '') + (un.size ? ' 비운 변수 ' + un.size + '종.' : '');
     } catch (e) { r.textContent = '만들지 못했습니다: ' + e.message; }
     $('#mk').disabled = false;
   };
@@ -731,6 +772,195 @@ function startEditor(plan, sel, host, onState) {
   return { redraw: () => { drawTable(); drawPv(); } };
 }
 
+/* ---------- 여러 파일 지원 ---------- */
+const MAX_FILES = 10, MAX_TOTAL = 60 * 1024 * 1024;
+const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const normKeys = a => (a || []).map(x => Array.isArray(x) ? { k: x[0], d: x[1] || '', n: x[2] || 0 } : { k: x.k, d: x.d || '', n: x.n || 0 });
+function normFiles(sheet) {
+  if (Array.isArray(sheet.files) && sheet.files.length) return sheet.files.map(f => ({ ...f, keys: normKeys(f.keys), map: f.map || {} }));
+  return [{ id: 'legacy', name: sheet.fileName || '파일', legacy: true, chunkCount: sheet.chunkCount || 0, rev: 0, keys: normKeys(sheet.keys), map: {} }];
+}
+const ukOf = (f, k) => (f.map && f.map[k]) || k;
+const fileMeta = f => ({ id: f.id, name: f.name, rev: f.rev || 0, chunkCount: f.chunkCount || 0, keys: f.keys.map(e => ({ k: e.k, d: e.d || '', n: e.n || 0 })), map: f.map || {}, ...(f.legacy ? { legacy: true } : {}) });
+function unify(files, prevKeys, chosen) {
+  const prevD = new Map(normKeys(prevKeys).map(e => [e.k, e.d])), m = new Map();
+  files.forEach(f => f.keys.forEach(e => { const uk = ukOf(f, e.k); let o = m.get(uk); if (!o) { o = { k: uk, d: '', n: 0 }; m.set(uk, o); } o.n += e.n || 0; if (!o.d && e.d) o.d = e.d; }));
+  m.forEach((o, uk) => { if (chosen && chosen[uk] !== undefined) o.d = chosen[uk]; else if (prevD.get(uk)) o.d = prevD.get(uk); });
+  return [...m.values()];
+}
+function findConflicts(files, prevKeys) {
+  const prevD = new Map(normKeys(prevKeys).map(e => [e.k, e.d])), g = new Map();
+  files.forEach(f => f.keys.forEach(e => { const uk = ukOf(f, e.k); if (!g.has(uk)) g.set(uk, []); g.get(uk).push({ f, e }); }));
+  const out = [];
+  g.forEach((arr, uk) => {
+    const ref = prevD.get(uk) || (arr.find(x => x.e.d) || { e: { d: '' } }).e.d; if (!ref) return;
+    if (arr.some(x => x.f.isNew && x.e.d && x.e.d !== ref)) out.push({ uk, ref, arr, vals: [...new Set([ref, ...arr.map(x => x.e.d).filter(Boolean)])] });
+  });
+  return out.sort((a, b) => a.uk.localeCompare(b.uk, 'ko'));
+}
+const shortName = n => n.replace(/\.[^.]+$/, '').replace(/[.\s{}]/g, '').slice(0, 12) || '파일';
+function suffixKey(k, s) { const i = k.lastIndexOf('.'); return i < 0 ? k + '@' + s : k.slice(0, i) + '@' + s + k.slice(i); }
+function conflictModal(conf) {
+  return new Promise(res => {
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div class="box" style="width:min(820px,100%)"><h2>같은 변수인데 처음 값이 다릅니다 (${conf.length}개)</h2>
+      <p class="muted">여러 파일에 같은 이름의 변수가 있는데 문서에 적힌 처음 값이 서로 다릅니다.<br><b>합치기</b>: 한 번만 입력하면 모든 파일에 들어갑니다. <b>따로 두기</b>: 파일마다 별도 칸이 생깁니다.<br>입력하지 않은 변수는 각 파일의 원래 값이 그대로 남습니다.</p>
+      <div class="row"><button id="cm_a" type="button">모두 합치기</button><button id="cm_b" type="button">모두 따로 두기</button></div>
+      <div class="tw" style="max-height:50vh;overflow:auto;margin-top:8px"><table><tr><th>변수</th><th>파일별 처음 값</th><th>선택</th></tr>${conf.map((c, i) => `<tr><td>${esc(c.uk)}</td><td>${c.arr.map(x => esc(x.f.name.slice(0, 18)) + ': <b>' + esc(x.e.d || '(없음)') + '</b>').join('<br>')}</td><td><select data-c="${i}" style="font:inherit;padding:4px">${c.vals.map(v => `<option value="m:${esc(v)}">합치기 → ${esc(v)}</option>`).join('')}<option value="s">따로 두기</option></select></td></tr>`).join('')}</table></div>
+      <div class="row" style="margin-top:14px;justify-content:flex-end"><button id="cm_x" type="button">취소</button><button class="pri" id="cm_ok" type="button">이대로 진행</button></div></div>`;
+    document.body.appendChild(m);
+    const all = s => m.querySelectorAll('select[data-c]').forEach(e => { e.value = s === 's' ? 's' : e.options[0].value; });
+    m.querySelector('#cm_a').onclick = () => all('m'); m.querySelector('#cm_b').onclick = () => all('s');
+    m.querySelector('#cm_x').onclick = () => { m.remove(); res(null); };
+    m.querySelector('#cm_ok').onclick = () => { const d = {}; m.querySelectorAll('select[data-c]').forEach(e => d[conf[+e.dataset.c].uk] = e.value); m.remove(); res(d); };
+  });
+}
+function applyDecisions(conf, dec) {
+  const chosen = {};
+  conf.forEach(c => {
+    const v = dec[c.uk];
+    if (v && v.startsWith('m:')) { chosen[c.uk] = v.slice(2); return; }
+    c.arr.forEach(x => { if (x.f.isNew && x.e.d && x.e.d !== c.ref) { x.f.map = x.f.map || {}; x.f.map[x.e.k] = suffixKey(x.e.k, shortName(x.f.name)); } });
+  });
+  return chosen;
+}
+const chunkDocId = (f, i) => f.legacy ? String(i).padStart(4, '0') : 'c_' + f.id + '_' + (f.rev || 0) + '_' + String(i).padStart(4, '0');
+async function putChunks(ref, f, b64, prog) {
+  const n = Math.ceil(b64.length / CHUNK);
+  for (let i = 0; i < n; i++) { prog && prog(i + 1, n); await ref.collection('chunks').doc(chunkDocId(f, i)).set({ n: i, d: b64.slice(i * CHUNK, (i + 1) * CHUNK) }); }
+}
+async function delChunks(ref, f) { for (let i = 0; i < (f.chunkCount || 0); i++) { try { await ref.collection('chunks').doc(chunkDocId(f, i)).delete(); } catch (e) { } } }
+async function loadFileBytes(setId, f) {
+  const col = db.collection('varsets').doc(setId).collection('chunks'), n = f.chunkCount || 0, parts = new Array(n);
+  for (let i = 0; i < n; i += 6) await Promise.all(Array.from({ length: Math.min(6, n - i) }, (_, j) => col.doc(chunkDocId(f, i + j)).get().then(s => { if (!s.exists) throw new Error('파일 조각을 찾을 수 없습니다 (' + f.name + ')'); parts[i + j] = s.data().d; })));
+  return b64ToBytes(parts.join(''));
+}
+const b64Len = u => 4 * Math.ceil(u.length / 3);
+function newFileObj(it) { return { id: rid(), name: it.name, rev: 0, chunkCount: Math.ceil(b64Len(it.bytes) / CHUNK), keys: normKeys(it.keys), map: {}, isNew: true }; }
+function setName(files) { return files.length === 1 ? files[0].name : files[0].name + ' 외 ' + (files.length - 1) + '개'; }
+const tooBig = d => JSON.stringify(d).length > 900000;
+
+/* 새 세트 저장 */
+async function commitNew(u, title, deadline, items, prog) {
+  const files = items.map(newFileObj), conf = findConflicts(files, []);
+  let chosen = {}; if (conf.length) { const dec = await conflictModal(conf); if (!dec) throw new Error('취소했습니다.'); chosen = applyDecisions(conf, dec); }
+  const keys = unify(files, [], chosen);
+  const ref = db.collection('varsets').doc();
+  const data = { title: title || items[0].name.replace(/\.[^.]+$/, ''), fileName: setName(files), files: files.map(fileMeta), keys, closed: false, ownerUid: u.uid, ownerName: u.displayName || '', createdAt: TS() };
+  if (tooBig(data)) throw new Error('변수가 너무 많아 한 세트에 담을 수 없습니다. 파일 수나 변수 수를 줄여 주세요.');
+  if (deadline) data.deadlineAt = firebase.firestore.Timestamp.fromDate(new Date(deadline));
+  await ref.set(data);
+  try { for (let i = 0; i < files.length; i++) await putChunks(ref, files[i], bytesToB64(items[i].bytes), (a, n) => prog && prog(files[i].name, a, n, i + 1, files.length)); }
+  catch (e) { try { await ref.delete(); } catch (x) { } throw e; }
+  return ref.id;
+}
+/* 기존 세트: 파일 추가 / 교체 */
+async function commitChange(ref, sheet, items, replaceId, prog) {
+  let files = normFiles(sheet); const old = replaceId ? files.find(f => f.id === replaceId) : null;
+  const nf = items.map(newFileObj);
+  if (old) { if (!old.legacy) { nf[0].id = old.id; nf[0].rev = (old.rev || 0) + 1; } files = files.map(f => f === old ? nf[0] : f); }
+  else { if (files.length + nf.length > MAX_FILES) throw new Error('한 세트에는 파일을 ' + MAX_FILES + '개까지 담을 수 있습니다.'); files = files.concat(nf); }
+  const conf = findConflicts(files, sheet.keys);
+  let chosen = {}; if (conf.length) { const dec = await conflictModal(conf); if (!dec) throw new Error('취소했습니다.'); chosen = applyDecisions(conf, dec); }
+  for (let i = 0; i < nf.length; i++) await putChunks(ref, nf[i], bytesToB64(items[i].bytes), (a, n) => prog && prog(nf[i].name, a, n, i + 1, nf.length));
+  const keys = unify(files, sheet.keys, chosen), upd = { files: files.map(fileMeta), keys, fileName: setName(files) };
+  if (tooBig(upd)) throw new Error('변수가 너무 많아 한 세트에 담을 수 없습니다.');
+  await ref.update(upd);
+  if (old) await delChunks(ref, old);
+  return upd;
+}
+async function removeFile(ref, sheet, fid) {
+  const files = normFiles(sheet), f = files.find(x => x.id === fid), rest = files.filter(x => x !== f); if (!rest.length) throw new Error('마지막 파일은 지울 수 없습니다.');
+  const upd = { files: rest.map(fileMeta), keys: unify(rest, sheet.keys), fileName: setName(rest) };
+  await ref.update(upd); await delChunks(ref, f); return upd;
+}
+
+/* ---------- 파일 올리기·변수 찾기 위젯 ---------- */
+function prepWidget(host, o) {
+  o = o || {}; const multi = o.multi !== false; let items = [], active = 0;
+  const $$ = s => host.querySelector(s);
+  host.innerHTML = `<div class="nf3"${o.lead ? '' : ' style="grid-template-columns:minmax(240px,1.6fr) minmax(300px,auto)"'}>
+      ${o.lead ? '<div>' + o.lead + '</div>' : ''}
+      <div><label>한글 파일 (.hwpx, 20MB 이하${multi ? ' · 여러 개 가능' : ''})</label><input type="file" id="pw_in" accept=".hwpx" ${multi ? 'multiple' : ''} hidden>
+        <div class="drop-zone sm" id="pw_dz"><div class="dz-ico">📂</div><div class="dz-main" id="pw_dzm"></div></div></div>
+      <div id="pw_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:nowrap"><select id="pw_min" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="전화·팩스번호가 있는 줄의 앞뒤 칸 단어(부서명·담당자·직위 등)와, 본문에서 번호 앞에 붙은 부서명도 변수로 잡습니다"><input type="checkbox" id="pw_ard" checked>앞뒤 단어도</label><button id="pw_find" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
+    </div>
+    <div id="pw_files" class="row" style="margin:10px 0 4px"></div>
+    <label class="chk"><input type="radio" name="pw_nm" value="auto" checked> 변수가 없는 <b>원본 파일</b> — 전화·팩스번호와 부서명을 찾아 자동으로 변수로 바꿉니다</label>
+    <label class="chk"><input type="radio" name="pw_nm" value="has"> 이미 <b>{{변수}}가 들어 있는</b> 파일</label>
+    <div id="pw_has" hidden><label>기본값 파일 (선택, .json) — 변수의 처음 값</label><input type="file" id="pw_def" accept=".json"></div>
+    <div id="pw_ed"></div><div class="muted" id="pw_msg"></div>`;
+  const mode = () => host.querySelector('input[name=pw_nm]:checked').value, msg = t => { $$('#pw_msg').textContent = t || ''; };
+  const selCount = it => it.plan ? [...it.sel].filter(id => it.plan.vars.some(v => v.id === id)).length : 0;
+  const ready = () => items.length > 0 && (mode() === 'has' || items.every(it => it.plan && selCount(it) > 0));
+  const fire = () => o.onState && o.onState(ready());
+  function drawFiles() {
+    const dz = $$('#pw_dz'); dz.classList.toggle('has', items.length > 0);
+    $$('#pw_dzm').textContent = items.length ? '✅ 파일 ' + items.length + '개 (' + (items.reduce((a, i) => a + i.file.size, 0) / 1048576).toFixed(1) + ' MB) — 더 끌어다 놓거나 클릭' : multi ? '한글 파일(.hwpx)을 끌어다 놓거나 클릭 (여러 개 가능)' : '한글 파일(.hwpx)을 끌어다 놓거나 클릭';
+    $$('#pw_files').innerHTML = items.map((it, i) => { const c = selCount(it), st = it.plan ? (c ? '변수 ' + c + '종' : '⚠ 변수 없음') : (mode() === 'has' ? '' : '대기'); return `<span class="fchip${i === active && it.plan ? ' on' : ''}" data-i="${i}" title="${esc(it.file.name)}"><span class="fn">${esc(it.file.name)}</span><span class="fs">${(it.file.size / 1048576).toFixed(1)}MB${st ? ' · ' + st : ''}</span><button type="button" data-x="${i}" title="목록에서 빼기">✕</button></span>`; }).join('');
+  }
+  function show(i) {
+    active = i; const it = items[i]; if (!it || !it.plan) { $$('#pw_ed').innerHTML = ''; drawFiles(); return; }
+    startEditor(it.plan, it.sel, $$('#pw_ed'), () => { drawFiles(); fire(); });
+    const h = $$('#pw_ed').querySelector('h2'); if (h && items.length > 1) h.textContent = '[' + it.file.name + '] ' + h.textContent;
+    drawFiles(); fire();
+  }
+  function reset() { items.forEach(it => { it.plan = null; it.ctx = null; it.sel = new Set(); }); $$('#pw_ed').innerHTML = ''; msg(''); drawFiles(); fire(); }
+  function add(list) {
+    for (const f of Array.from(list)) {
+      if (!/\.hwpx$/i.test(f.name)) { toast('.hwpx 파일만 올릴 수 있습니다: ' + f.name); continue; }
+      if (f.size > MAX_FILE) { toast('20MB를 넘는 파일입니다: ' + f.name); continue; }
+      if (items.some(it => it.file.name === f.name && it.file.size === f.size)) continue;
+      if (!multi && items.length) items = [];
+      if (items.length >= MAX_FILES) { toast('파일은 ' + MAX_FILES + '개까지 올릴 수 있습니다.'); break; }
+      items.push({ file: f, plan: null, ctx: null, sel: new Set() });
+    }
+    if (items.reduce((a, i) => a + i.file.size, 0) > MAX_TOTAL) toast('파일 합계가 ' + (MAX_TOTAL / 1048576) + 'MB를 넘습니다. 파일을 줄여 주세요.');
+    $$('#pw_ed').innerHTML = ''; items.forEach(it => { it.plan = null; it.ctx = null; }); drawFiles(); fire();
+  }
+  const dz = $$('#pw_dz'), inp = $$('#pw_in');
+  dz.onclick = () => inp.click(); inp.onchange = () => { add(inp.files); inp.value = ''; };
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }));
+  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, () => dz.classList.add('highlight')));
+  dz.addEventListener('dragleave', () => dz.classList.remove('highlight'));
+  dz.addEventListener('drop', e => { dz.classList.remove('highlight'); add(e.dataTransfer.files); });
+  $$('#pw_files').onclick = e => {
+    const x = e.target.closest('button[data-x]'); if (x) { items.splice(+x.dataset.x, 1); active = 0; $$('#pw_ed').innerHTML = ''; items.forEach(it => { it.plan = it.plan; }); drawFiles(); if (items[0] && items[0].plan) show(0); fire(); return; }
+    const c = e.target.closest('.fchip'); if (c && items[+c.dataset.i] && items[+c.dataset.i].plan) show(+c.dataset.i);
+  };
+  const sync = () => { $$('#pw_auto').hidden = mode() !== 'auto'; $$('#pw_has').hidden = mode() !== 'has'; reset(); };
+  host.querySelectorAll('input[name=pw_nm]').forEach(r => r.onchange = sync); $$('#pw_min').onchange = reset; $$('#pw_ard').onchange = reset;
+  $$('#pw_find').onclick = async () => {
+    if (!items.length) return toast('한글 파일을 선택해 주세요.');
+    const b = $$('#pw_find'); b.disabled = true; let bad = 0;
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]; if (it.plan) continue;
+        msg('(' + (i + 1) + '/' + items.length + ') ' + it.file.name + ' — 전화·팩스번호와 부서명을 찾는 중…'); await new Promise(r => setTimeout(r, 30));
+        try { it.ctx = await loadDocs(new Uint8Array(await it.file.arrayBuffer())); it.plan = analyze(it.ctx.docs, +$$('#pw_min').value, $$('#pw_ard').checked); if (!it.plan.vars.length) { it.plan = null; it.ctx = null; bad++; toast(it.file.name + ': 변수로 만들 번호·부서명을 찾지 못했습니다.'); } else it.sel = new Set(it.plan.vars.map(v => v.id)); }
+        catch (e) { bad++; toast(it.file.name + ': ' + e.message); }
+      }
+      msg(bad ? '변수를 찾지 못한 파일이 ' + bad + '개 있습니다. 목록에서 ✕로 빼거나 직접 변수를 추가해 주세요.' : '');
+      const first = items.findIndex(it => it.plan); if (first >= 0) show(first); else { drawFiles(); fire(); }
+    } finally { b.disabled = false; }
+  };
+  async function convertAll() {
+    if (!ready()) throw new Error(mode() === 'auto' ? '먼저 「변수 찾기」를 눌러 주세요. (변수가 없는 파일이 있으면 목록에서 빼 주세요)' : '파일을 선택해 주세요.');
+    let defs = {}; if (mode() === 'has') { const df = $$('#pw_def').files[0]; if (df) defs = flatDefaults(JSON.parse(await df.text())); }
+    const out = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]; msg('(' + (i + 1) + '/' + items.length + ') ' + it.file.name + ' — 변수를 문서에 넣는 중…'); await new Promise(r => setTimeout(r, 30));
+      if (mode() === 'auto') { const r = await convertFile(null, it.sel, it.plan, it.ctx.docs, it.ctx.z); out.push({ name: it.file.name, bytes: r.bytes, keys: r.keys }); }
+      else { const bytes = new Uint8Array(await it.file.arrayBuffer()), found = await scanVars(bytes); if (!found.length) throw new Error(it.file.name + ': {{변수}} 글자를 찾지 못했습니다.'); out.push({ name: it.file.name, bytes, keys: found.map(([k, n]) => [k, defs[k] || '', n]) }); }
+      if (out[i].bytes.length > MAX_FILE) throw new Error(it.file.name + ': 변환한 파일이 20MB를 넘습니다.');
+    }
+    items.forEach(it => { it.plan = null; it.ctx = null; });
+    return out;
+  }
+  sync();
+  return { ready, convertAll, msg, items: () => items, clear: () => { items = []; reset(); } };
+}
+
 /* ---------- 관리자: 목록 / 새로 만들기 ---------- */
 function msgPage(t, b) { clearSubs(); app.innerHTML = `<div class="card center"><h2>${t}</h2><p>${b}</p></div>`; }
 function adminBar(u) { return `<div class="row" style="margin-bottom:12px"><h1 style="flex:1;margin:0;cursor:pointer" id="home">변수 입력 취합</h1><span class="muted">${esc(u.email || '')}</span><button id="out">로그아웃</button></div>`; }
@@ -742,12 +972,13 @@ async function loginPage() {
       <li><span class="fi">🔍</span><span><b>변수 자동 찾기</b> — 문서에서 전화·팩스번호, 부서명, 담당자·직위를 찾아 <b>{{변수}}</b>로 바꿔 줍니다.</span></li>
       <li><span class="fi">🔗</span><span><b>링크로 함께 입력</b> — 받은 링크를 열면 <b>자기 부서 칸만</b> 골라 입력할 수 있고, 다른 사람이 쓰는 값이 바로 보입니다.</span></li>
       <li><span class="fi">📄</span><span><b>한 번에 반영</b> — 모인 값을 문서의 모든 해당 자리에 채워 <b>한글 파일(.hwpx)</b>로 내려받습니다.</span></li>
+      <li><span class="fi">🗂️</span><span><b>여러 파일을 한 번에</b> — 각자 관리하는 한글 파일 여러 개를 한 세트로 올리면, 같은 이름의 변수(기관·부서·전화번호 등)는 <b>한 번만 입력</b>해도 모든 파일에 들어갑니다.</span></li>
       <li><span class="fi">🔁</span><span><b>담당자가 바뀌어도 OK</b> — 값만 다시 고치면 같은 문서로 새 파일을 몇 번이든 만들 수 있습니다.</span></li>
     </ul></div></div>
   <div class="steps">
     <div class="stp"><span class="n">1</span><b>파일 등록</b><br>관리자가 한글 파일을 올리고 찾은 변수를 확인·수정합니다.</div>
     <div class="stp"><span class="n">2</span><b>링크 공유</b><br>만든 링크를 부서·담당자에게 보내 각자 값을 입력하게 합니다.</div>
-    <div class="stp"><span class="n">3</span><b>파일 만들기</b><br>입력이 끝나면 값이 모두 채워진 한글 파일을 내려받습니다.</div>
+    <div class="stp"><span class="n">3</span><b>파일 만들기</b><br>입력이 끝나면 값이 모두 채워진 한글 파일을 내려받습니다. 파일이 여러 개면 ZIP 하나로 받습니다.</div>
   </div>
   <div class="login-box"><p style="margin:0 0 12px"><b>파일을 등록하는 관리자</b>는 구글 로그인이 필요하고, <b>입력하는 분</b>은 받은 링크로 바로 입력합니다.</p><button class="pri" id="gl">Google로 로그인</button>
   <p class="muted" style="margin:12px 0 0">올린 파일은 Firebase에 저장되므로 개인정보·보안 사항이 들어 있는 문서는 올리지 마세요.</p></div>`;
@@ -759,75 +990,26 @@ async function dashboard(u) {
   try {
     const s = await db.collection('varsets').where('ownerUid', '==', u.uid).get();
     const L = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt ? b.createdAt.seconds : 0) - (a.createdAt ? a.createdAt.seconds : 0));
-    $('#lst').innerHTML = L.length ? L.map(x => `<div class="item" style="grid-template-columns:1fr auto"><div><b>${esc(x.title)}</b><div class="muted">변수 ${(x.keys || []).length}종 · ${esc(x.fileName || '')}${isClosed(x) ? ' · 마감' : ''}</div></div><button data-id="${x.id}">열기</button></div>`).join('') : '<p class="muted">등록된 변수 세트가 없습니다.</p>';
+    $('#lst').innerHTML = L.length ? L.map(x => `<div class="item" style="grid-template-columns:1fr auto"><div><b>${esc(x.title)}</b><div class="muted">변수 ${(x.keys || []).length}종 · ${(x.files || []).length > 1 ? '파일 ' + x.files.length + '개' : esc(x.fileName || '')}${isClosed(x) ? ' · 마감' : ''}</div></div><button data-id="${x.id}">열기</button></div>`).join('') : '<p class="muted">등록된 변수 세트가 없습니다.</p>';
     $('#lst').querySelectorAll('button[data-id]').forEach(b => b.onclick = () => { history.replaceState(null, '', location.pathname + '?s=' + b.dataset.id); location.reload(); });
   } catch (e) { $('#lst').textContent = '불러오지 못했습니다: ' + e.message; }
 }
 function newForm(u) {
   clearSubs(); app.style.maxWidth = '1500px';
-  let plan = null, ctx = null, sel = new Set();
   app.innerHTML = adminBar(u) + `<div class="card"><h2>새 변수 세트 등록</h2>
-    <div class="warn"><b>개인정보·보안 사항이 들어 있는 파일은 올리지 마세요.</b> 올린 파일은 Firebase에 저장됩니다.</div>
-    <div class="nf3">
-      <div><label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 다중운집인파 재난 행동매뉴얼"></div>
-      <div><label>한글 파일 (.hwpx, 20MB 이하)</label><input type="file" id="nf" accept=".hwpx" hidden>
-        <div class="drop-zone sm" id="dz" title="한글 파일(.hwpx)을 끌어다 놓거나 클릭"><div class="dz-ico">📂</div><div class="dz-main" id="dzm">한글 파일(.hwpx)을 끌어다 놓거나 클릭</div><div class="dz-sub" id="dzs"></div></div></div>
-      <div id="o_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:nowrap"><select id="minN" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="전화·팩스번호가 있는 줄의 앞뒤 칸 단어(부서명·담당자·직위 등)와, 본문에서 번호 앞에 붙은 부서명도 변수로 잡습니다"><input type="checkbox" id="nard" checked>앞뒤 단어도</label><button id="nfind" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
-    </div>
-    <label class="chk"><input type="radio" name="nm" value="auto" checked> 변수가 없는 <b>원본 파일</b> — 전화·팩스번호와 부서명을 찾아 자동으로 변수로 바꿉니다</label>
-    <label class="chk"><input type="radio" name="nm" value="has"> 이미 <b>{{변수}}가 들어 있는</b> 파일</label>
-    <div id="o_has" hidden><label>기본값 파일 (선택, .json) — 변수의 처음 값</label><input type="file" id="nd" accept=".json"></div>
-    <div id="prev"></div>
+    <div class="warn"><b>개인정보·보안 사항이 들어 있는 파일은 올리지 마세요.</b> 올린 파일은 Firebase에 저장됩니다. 공통으로 쓰는 파일 여러 개를 한 세트로 올리면, 같은 이름의 변수는 한 번만 입력해도 모든 파일에 들어갑니다.</div>
+    <div id="pw"></div>
     <label>마감 일시 (선택)</label><input type="datetime-local" id="ndl">
     <div class="row" style="margin-top:16px"><button class="pri" id="ns" disabled>등록하고 링크 만들기</button><button id="nc">취소</button></div><div class="muted" id="np"></div></div>`;
   bindBar(u); $('#nc').onclick = () => dashboard(u);
-  const mode = () => document.querySelector('input[name=nm]:checked').value;
-  const reset = () => { plan = null; ctx = null; sel = new Set(); $('#prev').innerHTML = ''; $('#ns').disabled = mode() === 'auto'; };
-  const sync = () => { $('#o_auto').hidden = mode() !== 'auto'; $('#o_has').hidden = mode() !== 'has'; reset(); };
-  const dz = $('#dz'), showF = () => { const f = $('#nf').files[0]; dz.classList.toggle('has', !!f); $('#dzm').textContent = f ? '✅ ' + f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)' : '한글 파일(.hwpx)을 끌어다 놓거나 클릭'; dz.title = f ? f.name : ''; };
-  dz.onclick = () => $('#nf').click();
-  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }));
-  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, () => dz.classList.add('highlight')));
-  dz.addEventListener('dragleave', () => dz.classList.remove('highlight'));
-  dz.addEventListener('drop', e => { dz.classList.remove('highlight'); const f = e.dataTransfer.files[0]; if (!f) return; if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); const dt = new DataTransfer(); dt.items.add(f); $('#nf').files = dt.files; $('#nf').dispatchEvent(new Event('change')); });
-  document.querySelectorAll('input[name=nm]').forEach(r => r.onchange = sync); $('#nf').onchange = () => { showF(); reset(); }; $('#minN').onchange = reset; $('#nard').onchange = reset; sync();
-  const updNs = () => { $('#ns').disabled = !plan || ![...sel].some(id => plan.vars.some(v => v.id === id)); };
-  $('#nfind').onclick = async () => {
-    const f = $('#nf').files[0]; if (!f) return toast('한글 파일을 선택해 주세요.');
-    if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); if (f.size > MAX_FILE) return toast('파일이 20MB를 넘습니다.');
-    const b = $('#nfind'); b.disabled = true; $('#np').textContent = '문서에서 전화·팩스번호와 부서명을 찾는 중…';
-    try {
-      await new Promise(r => setTimeout(r, 30));
-      ctx = await loadDocs(new Uint8Array(await f.arrayBuffer())); plan = analyze(ctx.docs, +$('#minN').value, $('#nard').checked);
-      if (!plan.vars.length) { plan = null; throw new Error('변수로 만들 번호·부서명을 찾지 못했습니다.'); }
-      sel = new Set(plan.vars.map(v => v.id)); startEditor(plan, sel, $('#prev'), updNs); $('#np').textContent = '';
-    } catch (e) { toast('찾지 못했습니다: ' + e.message); $('#np').textContent = ''; }
-    b.disabled = false;
-  };
+  const w = prepWidget($('#pw'), { multi: true, lead: '<label>제목</label><input type="text" id="nt" style="width:100%" placeholder="예: 재난 행동매뉴얼 모음">', onState: r => { const b = $('#ns'); if (b && !b.dataset.busy) b.disabled = !r; } });
   $('#ns').onclick = async () => {
-    const f = $('#nf').files[0], title = $('#nt').value.trim(); if (!f) return toast('한글 파일을 선택해 주세요.');
-    if (!/\.hwpx$/i.test(f.name)) return toast('.hwpx 파일만 올릴 수 있습니다.'); if (f.size > MAX_FILE) return toast('파일이 20MB를 넘습니다.');
-    const btn = $('#ns'); btn.disabled = true; btn.textContent = '등록 중…';
+    const btn = $('#ns'); btn.disabled = true; btn.dataset.busy = '1'; btn.textContent = '등록 중…';
     try {
-      let bytes, keys;
-      if (mode() === 'auto') {
-        if (!plan) throw new Error('먼저 「변수 찾기」를 눌러 주세요.');
-        $('#np').textContent = '변수를 문서에 넣는 중…'; await new Promise(r => setTimeout(r, 30));
-        const o = await convertFile(null, sel, plan, ctx.docs, ctx.z); bytes = o.bytes; keys = o.keys; plan = null; ctx = null;
-      } else {
-        bytes = new Uint8Array(await f.arrayBuffer()); const found = await scanVars(bytes);
-        if (!found.length) throw new Error('{{변수}} 글자를 찾지 못했습니다.');
-        let defs = {}; const df = $('#nd').files[0]; if (df) defs = flatDefaults(JSON.parse(await df.text()));
-        keys = found.map(([k, n]) => [k, defs[k] || '', n]);
-      }
-      if (bytes.length > MAX_FILE) throw new Error('변환한 파일이 20MB를 넘습니다.');
-      const ref = db.collection('varsets').doc(), b64 = bytesToB64(bytes), n = Math.ceil(b64.length / CHUNK);
-      const data = { title: title || f.name.replace(/\.[^.]+$/, ''), fileName: f.name, keys: keys.map(([k, d, n]) => ({ k, d: d || '', n: n || 0 })), chunkCount: n, closed: false, ownerUid: u.uid, ownerName: u.displayName || '', createdAt: TS() };
-      if ($('#ndl').value) data.deadlineAt = firebase.firestore.Timestamp.fromDate(new Date($('#ndl').value));
-      await ref.set(data);
-      for (let i = 0; i < n; i++) { $('#np').textContent = '파일 올리는 중 ' + (i + 1) + ' / ' + n; await ref.collection('chunks').doc(String(i).padStart(4, '0')).set({ n: i, d: b64.slice(i * CHUNK, (i + 1) * CHUNK) }); }
-      toast('등록되었습니다.'); history.replaceState(null, '', location.pathname + '?s=' + ref.id); location.reload();
-    } catch (e) { toast('등록 실패: ' + e.message); btn.disabled = mode() === 'auto'; btn.textContent = '등록하고 링크 만들기'; $('#np').textContent = ''; if (mode() === 'auto') { plan = null; ctx = null; $('#prev').innerHTML = ''; } }
+      const items = await w.convertAll();
+      const id = await commitNew(u, $('#nt').value.trim(), $('#ndl').value, items, (n, a, t, i, k) => { $('#np').textContent = '파일 올리는 중 (' + i + '/' + k + ') ' + n + ' ' + a + '/' + t; });
+      toast('등록되었습니다.'); history.replaceState(null, '', location.pathname + '?s=' + id); location.reload();
+    } catch (e) { toast('등록 실패: ' + e.message); $('#np').textContent = ''; w.msg(''); delete btn.dataset.busy; btn.textContent = '등록하고 링크 만들기'; btn.disabled = !w.ready(); }
   };
 }
 
