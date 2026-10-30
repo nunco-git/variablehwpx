@@ -791,6 +791,42 @@ function pbMatch(base, list) {
   const c = list.filter(x => x.n.length >= 3 && n.length >= 3 && !x.comp && (n.includes(x.n) || x.n.includes(n)));
   return c.length === 1 ? c[0] : null;
 }
+/* ---------- 부서 옆 전화번호: 부서명 검색 → 번호 있는 곳 / 누락된 곳 → 일괄 입력 ---------- */
+const cleanT = t => String(t || '').replace(/[\u200b\ufeff]/g, '').trim();
+/* 비었거나 번호 자리표시(-, ○○, 041-, ☎ 등)뿐인 칸 */
+const BLANKISH = t => { const x = cleanT(t).replace(/[\s\u00a0\u3000]/g, ''); return x === '' || /^[-–—_~.·…ㆍ○◯●◎×xX*※\/()\[\]]+$/.test(x) || /^0\d{1,2}[-.)]*$/.test(x) || /^(0\d{1,2}[-.)]*)?\d{0,4}[-.]$/.test(x) || /^(☎|TEL|Tel|tel|T|F)[:.]*$/.test(x); };
+const numIn = t => { const m = cleanT(t).match(new RegExp(NUMG.source)); return m ? m[1] : ''; };
+const numCell = t => { const n = numIn(t), c = cleanT(t); return !!n && c.length <= 40 && (c.replace(n, '').match(/[가-힣]/g) || []).length <= 4; };
+function deptPhoneScan(docs, query, knownDepts) {
+  const q = nrm(query || ''), res = [];
+  docs.forEach((D, di) => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => {
+    const g = tblGrid(tbl); if (!g.list.length) return;
+    const txt = o => cleanT(cellText(o.tc));
+    /* 열 종류: 머리글(전화/팩스/유선/무선) 아래가 번호나 빈칸이면 그 열, 아니면 번호가 대부분인 열 */
+    const colRole = new Map();
+    g.list.forEach(y => { if (hasTbl(y.tc)) return; const n = nrm(txt(y)); const role = PHONE_LAB(n) ? '전화' : FAX_LAB(n) ? '팩스' : null; if (!role) return;
+      const below = g.map.get((y.r + y.rs) + ',' + y.c); if (!below || hasTbl(below.tc)) return; const bt = txt(below);
+      if (BLANKISH(bt) || numCell(bt)) for (let c = y.c; c < y.c + y.cs; c++) colRole.set(c, { role, kind: role === '전화' ? phoneKind(n) : '' }); });
+    const cols = new Set(g.list.map(y => y.c));
+    cols.forEach(c => { if (colRole.has(c)) return; let nums = 0, ne = 0; g.list.forEach(y => { if (y.c !== c || hasTbl(y.tc)) return; const t = txt(y); if (!BLANKISH(t)) { ne++; if (numCell(t)) nums++; } }); if (nums >= 1 && nums / ne >= 0.5) colRole.set(c, { role: '전화', kind: '' }); });
+    g.list.forEach(o => {
+      if (hasTbl(o.tc)) return; const t = txt(o); if (!t || t.length > 40) return; const n = nrm(t);
+      if (numCell(t) || isLabelish(t)) return;
+      const hit = q ? n.includes(q) : (knownDepts.has(n) || cellKind(g, o) === 'dept'); if (!hit) return;
+      const targets = [], seen = new Set();
+      const cand = [...colRole.keys()].filter(c => !(c >= o.c && c < o.c + o.cs)).sort((a, b) => Math.abs(a - o.c) - Math.abs(b - o.c));
+      cand.forEach(c => { const cr = colRole.get(c), k = cr.role + cr.kind; if (seen.has(k)) return; const x = g.map.get(o.r + ',' + c); if (!x || x === o || hasTbl(x.tc)) return;
+        const xt = txt(x); const st = BLANKISH(xt) ? 'missing' : numCell(xt) ? 'has' : null; if (!st) return; seen.add(k); targets.push({ x, role: cr.role, kind: cr.kind, status: st, text: xt, num: st === 'has' ? (cleanT(xt).replace(numIn(xt), '').trim() ? xt : numIn(xt)) : '' }); });
+      if (!targets.length) {   /* 번호 열을 모르면 바로 옆 칸 (오른쪽 → 왼쪽 → 아래 → 위) */
+        const nb = nbOf(g, o);
+        for (const d of ['right', 'left', 'below', 'above']) { const x = nb[d]; if (!x || hasTbl(x.tc)) continue; const xt = txt(x); const st = BLANKISH(xt) ? 'missing' : numCell(xt) ? 'has' : null; if (!st) continue;
+          const lab = d === 'right' ? nb.left : null; targets.push({ x, role: lab && FAX_LAB(nrm(txt(lab))) ? '팩스' : '전화', kind: '', status: st, text: xt, num: st === 'has' ? (cleanT(xt).replace(numIn(xt), '').trim() ? xt : numIn(xt)) : '' }); break; }
+      }
+      if (targets.length) res.push({ key: n, form: t, o, g, di, targets });
+    });
+  }));
+  return res;
+}
 /* 값이 있는 전화·팩스 변수로, 같은 부서·이름인데 값이 빈 변수를 채움.
    변수 이름이 조금 달라도(홍길동.전화 / 행정과·홍길동.전화 / 행정과.전화) 같은 사람·부서로 봄. 후보가 여럿이면 먼저 나온 값. */
 function inferFill(list) {
@@ -1065,6 +1101,10 @@ function startEditor(plan, sel, host, onState, getBytes, fileName) {
     <p class="muted">체크한 항목만 변수로 바뀝니다. 아래 미리보기에서 색이 칠해진 글자가 변수가 될 자리입니다. 칸을 눌러 이 자리만 해제하거나, 글자를 드래그해서 새 변수를 추가할 수 있습니다.</p>
     <div class="row" style="margin:8px 0"><button type="button" class="pri" id="dl_now">변경한 내용 그대로 내려받기 (.hwpx)</button><span class="muted" id="dl_m">등록하지 않고 지금 상태의 한글 파일을 바로 받습니다. 표의 「값」을 고치면 그 값이 문서의 모든 자리에 들어갑니다.</span></div>
     <div class="row" style="margin:8px 0"><b>바로 바꾸기</b><input type="text" id="fr_f" placeholder="찾을 글자" style="flex:1 1 150px"><span>→</span><input type="text" id="fr_t" placeholder="바꿀 글자 (비우면 삭제)" style="flex:1 1 150px"><button type="button" id="fr_c">몇 곳?</button><button type="button" id="fr_r">모두 바꾸기</button><span class="muted" id="fr_m"></span></div>
+    <details id="dp_box" style="margin:8px 0" open><summary style="cursor:pointer"><b>부서 옆 전화번호 채우기</b> <span class="muted" id="dp_sum">— 부서명을 검색해 번호가 있는 곳과 누락된 곳을 찾아, 누락된 칸에 한 번에 넣습니다</span></summary>
+      <div class="row" style="margin-top:6px"><input type="search" id="dp_q" placeholder="부서명 (예: 사회복지과) — 비우면 문서의 모든 부서" style="flex:1 1 240px;max-width:380px"><button type="button" id="dp_go">검색</button><label class="chk" title="번호가 이미 적힌 칸도 같은 변수로 묶어, 번호를 한 번 고치면 모든 칸이 바뀌게 합니다"><input type="checkbox" id="dp_src" checked>번호가 있는 칸도 같은 변수로 묶기</label></div>
+      <div id="dp_res" style="margin-top:8px;max-height:46vh;overflow:auto"></div>
+      <div class="row" style="margin-top:8px"><button type="button" class="pri" id="dp_apply" hidden>체크한 부서의 누락된 칸에 번호 넣기</button><button type="button" id="dp_undo" hidden>방금 넣은 것 취소</button><span class="muted" id="dp_m"></span></div></details>
     <div class="row" style="margin:8px 0"><b>옆 빈칸 채우기</b>
       <label class="chk"><input type="checkbox" id="nb_r" checked>오른쪽</label><label class="chk"><input type="checkbox" id="nb_l" checked>왼쪽</label><label class="chk"><input type="checkbox" id="nb_b" checked>아래쪽</label><label class="chk"><input type="checkbox" id="nb_a" checked>위쪽</label>
       <label class="chk" title="바로 옆뿐 아니라 그 다음 빈칸까지, 글자가 있는 칸을 만날 때까지 이어서 찾습니다"><input type="checkbox" id="nb_c">연속된 빈칸 모두</label>
@@ -1288,6 +1328,73 @@ function startEditor(plan, sel, host, onState, getBytes, fileName) {
   $$('#pb_dm').textContent = (plan.book && plan.book.length)
     ? '문서에서 부서·번호 ' + plan.book.length + '곳을 찾았고, 같은 부서의 빈칸 ' + (plan.autoN || 0) + '개에 이미 채웠습니다.' : '문서에서 부서와 짝지어진 번호를 찾지 못했습니다.';
   $$('#pb_doc').onclick = () => applyBook(plan.book || [], $$('#pb_dm'));
+  /* --- 부서 옆 전화번호 채우기 --- */
+  let dpScan = [], dpGroups = [], dpUndo = null;
+  const dpKnown = () => new Set(plan.vars.filter(v => v.col === '명').map(v => nrm(v.def || '')));
+  const dpRender = () => {
+    const by = new Map();
+    dpScan.forEach(r => { if (!by.has(r.key)) by.set(r.key, { key: r.key, form: r.form, occ: [] }); by.get(r.key).occ.push(r); });
+    dpGroups = [...by.values()].map(gp => {
+      const slots = new Map();   /* role+kind → { has:[{r,t}], missing:[{r,t}] } */
+      gp.occ.forEach(r => r.targets.forEach(t => { const k = t.role + '|' + t.kind; if (!slots.has(k)) slots.set(k, { role: t.role, kind: t.kind, has: [], missing: [], done: [] });
+        const op = cellOp.get(t.x.tc), handled = t.status === 'missing' && op && !op.off && op.type === 'cell' && sel.has(op.v.id) && op.v.def && !BLANKISH(op.v.def);   /* 이미 변수에 번호가 들어 있게 처리된 칸 */
+        (t.status === 'has' ? slots.get(k).has : handled ? slots.get(k).done : slots.get(k).missing).push({ r, t }); }));
+      return { ...gp, slots: [...slots.values()] };
+    });
+    const miss = dpGroups.reduce((a, gp) => a + gp.slots.reduce((b, sl) => b + sl.missing.length, 0), 0);
+    $$('#dp_sum').textContent = dpGroups.length ? '— 부서 ' + dpGroups.length + '곳 · 누락된 번호 칸 ' + miss + '곳' : '— 부서 옆 번호 칸을 찾지 못했습니다';
+    $$('#dp_res').innerHTML = dpGroups.length ? '<table class="pt" style="width:100%"><tr><th></th><th>부서</th><th>종류</th><th>번호가 있는 칸</th><th>누락된 칸</th><th>넣을 번호</th><th></th></tr>' + dpGroups.map((gp, gi) => gp.slots.map((sl, si) => {
+      const nums = [...new Set(sl.has.map(h => h.t.num))];
+      return '<tr><td>' + (si === 0 ? '' : '') + '<input type="checkbox" data-dg="' + gi + '|' + si + '"' + (sl.missing.length && nums.length ? ' checked' : ' disabled') + '></td><td>' + esc(gp.form) + '</td><td>' + esc(sl.role + sl.kind) + '</td><td>' + sl.has.length + '곳</td><td style="color:' + (sl.missing.length ? '#c0392b' : 'inherit') + '"><b>' + sl.missing.length + '곳</b>' + (sl.done.length ? ' <span class="muted">(변수로 채움 ' + sl.done.length + '곳)</span>' : '') + '</td><td>' + (nums.length > 1 ? '<select data-dn="' + gi + '|' + si + '">' + nums.map(n => '<option>' + esc(n) + '</option>').join('') + '</select>' : esc(nums[0] || '(번호 없음)')) + '</td><td><button type="button" data-dj="' + gi + '|' + si + '" style="padding:2px 8px">보기</button></td></tr>';
+    }).join('')).join('') + '</table>' : '<p class="muted">검색어를 넣어 보세요. 부서 이름 칸의 옆(번호 열)에 번호가 있거나 비어 있어야 합니다.</p>';
+    $$('#dp_apply').hidden = !miss;
+  };
+  const dpRun = () => { dpScan = deptPhoneScan(docs, $$('#dp_q').value, dpKnown()); $$('#dp_m').textContent = ''; dpRender(); };
+  $$('#dp_go').onclick = dpRun; $$('#dp_q').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); dpRun(); } });
+  $$('#dp_box').addEventListener('toggle', () => { if ($$('#dp_box').open && !dpScan.length) dpRun(); });
+  $$('#dp_res').onclick = e => {
+    const j = e.target.closest('[data-dj]'); if (!j) return; const [gi, si] = j.dataset.dj.split('|').map(Number), sl = dpGroups[gi].slots[si];
+    const pick = (sl.missing[0] || sl.has[0]); if (!pick) return; const r = pick.r;
+    const p = r.o.tc.getElementsByTagNameNS(HPNS, 'p')[0]; if (r.di !== sec) goSec(r.di);
+    const el = p && visibleOf(p, r.form.slice(0, 6)); if (el) flash(el);
+    $$('#dp_m').textContent = '「' + r.form + '」 위치로 이동했습니다 (구역 ' + (r.di + 1) + ').';
+  };
+  $$('#dp_apply').onclick = () => {
+    const undo = { ops: [], swaps: [], vars: [] }; let cells = 0, groups = 0;
+    const gcell = x => cellOp.get(x.tc);
+    dpGroups.forEach((gp, gi) => gp.slots.forEach((sl, si) => {
+      const cb = $$('#dp_res [data-dg="' + gi + '|' + si + '"]'); if (!cb || !cb.checked || !sl.missing.length) return;
+      const selEl = $$('#dp_res [data-dn="' + gi + '|' + si + '"]'), num = selEl ? selEl.value : (sl.has[0] && sl.has[0].t.num); if (!num) return;
+      /* 같은 변수: 번호가 있는 칸이 이미 변수면 그 변수, 아니면 「부서.전화」를 새로 만듦 */
+      const srcHas = sl.has.find(h => h.t.num === num) || sl.has[0];
+      const srcOp = srcHas && gcell(srcHas.t.x); let V = srcOp && !srcOp.off && srcOp.type === 'cell' ? srcOp.v : null;
+      if (!V) {
+        const key = safeKey(gp.form) + sl.kind, id = key + '.' + sl.role; V = plan.vars.find(v => v.id === id);
+        if (!V) { V = { id, key, col: sl.role, def: num, n: 0 }; plan.vars.push(V); undo.vars.push(V); }
+        else if (!V.def) V.def = num;
+        sel.add(V.id);
+      }
+      const bind = x => {
+        const op = gcell(x);
+        if (op && !op.off) { if (op.v === V) return false; if (op.type !== 'cell' || (op.v.def && !BLANKISH(op.v.def))) return false; undo.swaps.push([op, op.v]); op.v = V; return true; }
+        const nop = { type: 'cell', tc: x.tc, v: V }; nop.idx = plan.ops.length; plan.ops.push(nop); cellOp.set(x.tc, nop); undo.ops.push(nop);
+        Array.from(x.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => plan.cellP.add(p)); return true;
+      };
+      let any = false;
+      sl.missing.forEach(m => { if (bind(m.t.x)) { cells++; any = true; } });
+      if ($$('#dp_src').checked) sl.has.forEach(h => { if (h.t.num === num && bind(h.t.x)) { any = true; } });
+      if (any) groups++;
+    }));
+    dpUndo = undo; $$('#dp_undo').hidden = !cells;
+    drawTable(); drawPv(); dpRun();
+    $$('#dp_m').textContent = cells ? '누락된 ' + cells + '칸에 번호를 넣었습니다 (부서/종류 ' + groups + '건). 변수 표에서 값을 고치면 모두 함께 바뀝니다.' : '넣을 칸이 없습니다. (체크한 항목에 번호가 있는 칸이 있어야 합니다)';
+  };
+  $$('#dp_undo').onclick = () => {
+    const u = dpUndo; if (!u) return;
+    u.swaps.forEach(([op, ov]) => { op.v = ov; if (!plan.vars.includes(ov)) { plan.vars.push(ov); sel.add(ov.id); } });
+    u.ops.forEach(op => { op.off = true; cellOp.delete(op.tc); Array.from(op.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => plan.cellP.delete(p)); });
+    dpUndo = null; $$('#dp_undo').hidden = true; drawTable(); drawPv(); dpRun(); $$('#dp_m').textContent = '취소했습니다.';
+  };
   /* 변수가 들어 있는 칸의 옆 빈칸을 같은 변수로 */
   let nbAdded = { added: [], swapped: [] };
   const tblOfTc = tc => { let n = tc.parentNode; while (n && !(n.localName === 'tbl' && n.namespaceURI === HPNS)) n = n.parentNode; return n; };
@@ -1354,6 +1461,7 @@ function startEditor(plan, sel, host, onState, getBytes, fileName) {
     drawTable(); drawPv();
     pbm(n + '개 변수에 입력했습니다.' + (skip ? ' (이미 값이 있어 건너뜀 ' + skip + '개)' : '') + (miss.length ? ' 맞는 변수가 없는 부서: ' + miss.slice(0, 8).join(', ') + (miss.length > 8 ? ' 외 ' + (miss.length - 8) + '곳' : '') : ''));
   };
+  dpRun();
   return { redraw: () => { drawTable(); drawPv(); } };
 }
 
