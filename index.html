@@ -619,7 +619,7 @@ function whoOf(g, cell, sameRow, titleOnly) {
   g.list.forEach(x => {
     if (x === cell || hasTbl(x.tc) || !(x.r < cell.r + cell.rs && x.r + x.rs > cell.r)) return;
     const tx = cellText(x.tc), t = titleOfText(tx), p = !t && !titleOnly && isPersonCell(g, x); if (!t && !p) return;
-    const d = Math.abs(x.c - cell.c) + (p ? 0 : 0.1); if (d < bd) { bd = d; best = t || nrm(tx); }
+    const d = Math.abs(x.c - cell.c) + (p ? 0 : 100);   /* 사람 이름이 있으면 직책보다 우선 */ if (d < bd) { bd = d; best = t || nrm(tx); }
   });
   return best || (sameRow || titleOnly ? '' : personOf(g, cell, false));
 }
@@ -629,6 +629,12 @@ function personOf(g, cell, sameRow) {
   let hit = near(g.list.filter(x => x.r < cell.r + cell.rs && x.r + x.rs > cell.r && ok(x)));
   if (!hit && !sameRow) hit = near(g.list.filter(x => x.r < cell.r && cell.r - x.r <= 2 && ok(x)));
   return hit ? nrm(cellText(hit.tc)) : '';
+}
+/* 같은 줄에 있는 부서·팀 칸들(왼쪽→오른쪽) — 둘 이상이면 「부서·팀」으로 묶음 */
+function rowOrgs(g, cell) {
+  const out = [], seen = new Set();
+  g.list.filter(y => y !== cell && !hasTbl(y.tc) && y.r < cell.r + cell.rs && y.r + y.rs > cell.r && cellKind(g, y) === 'dept').sort((a, b) => a.c - b.c).forEach(y => { const n = nrm(cellText(y.tc)); if (!seen.has(n)) { seen.add(n); out.push(n); } });
+  return out;
 }
 const hdrRow = (g, o) => g.list.some(x => x !== o && x.r === o.r && !hasTbl(x.tc) && (isDeptLabel(cellText(x.tc)) || NAME_HDR.test(nrm(cellText(x.tc)))));
 function scanDepts(docs, allP) {
@@ -695,7 +701,7 @@ function blankPhoneOps(SC, X) {
       const d0 = deptFor(cell, strict || sweep), person = whoOf(g, cell, strict || sweep);
       const rowD = g.list.find(y => y !== cell && y.r < cell.r + cell.rs && y.r + y.rs > cell.r && cellKind(g, y) === 'dept');
       const noDeptInTable = !g.list.some(y => cellKind(g, y) === 'dept') && !depts.length;
-      const dn = d0 ? d0.n : (rowD ? nrm(cellText(rowD.tc)) : (person && noDeptInTable ? single : null));
+      const ro = rowOrgs(g, cell), dn = ro.length >= 2 ? ro.join('·') : (d0 ? d0.n : (rowD ? nrm(cellText(rowD.tc)) : (person && noDeptInTable ? single : null)));
       /* 앞쪽에서 이미 같은 「부서·이름」 번호 변수가 있으면 그 변수를 함께 씀 → 한 번만 입력 */
       let key;
       if (person) {
@@ -823,8 +829,15 @@ function deptPhoneScan(docs, query, knownDepts) {
     cols.forEach(c => { if (colRole.has(c)) return; let nums = 0, ne = 0; g.list.forEach(y => { if (y.c !== c || hasTbl(y.tc)) return; const t = txt(y); if (!BLANKISH(t)) { ne++; if (numCell(t)) nums++; } }); if (nums >= 1 && nums / ne >= 0.5) colRole.set(c, { role: '전화', kind: '' }); });
     g.list.forEach(o => {
       if (hasTbl(o.tc)) return; const t = txt(o); if (!t || t.length > 40) return; const n = nrm(t);
-      if (numCell(t) || isLabelish(t)) return;
-      const hit = q ? n.includes(q) : (knownDepts.has(n) || cellKind(g, o) === 'dept'); if (!hit) return;
+      if (numCell(t) || isLabelish(t) || BLANKISH(t) || !/[가-힣A-Za-z]/.test(t)) return;
+      if (['person', 'title', 'tel', 'lab'].includes(cellKind(g, o))) return;   /* 이름·직책 칸은 부서 검색 대상이 아님 */
+      /* 같은 줄에 부서·팀이 함께 있으면 가장 오른쪽 칸(팀)을 기준으로 「부서·팀」을 한 묶음으로 */
+      const isOrgC = y => y !== o && !hasTbl(y.tc) && y.r < o.r + o.rs && y.r + y.rs > o.r && cellKind(g, y) === 'dept';
+      const sibs = g.list.filter(isOrgC);
+      if (sibs.some(y => y.c > o.c && !(y.rs > o.rs))) return;   /* 오른쪽에 더 안쪽(팀) 칸이 있으면 그 칸에서 처리 */
+      const chainC = sibs.filter(y => y.c < o.c && !(y.rs < o.rs && false)).sort((a, b) => a.c - b.c);
+      const chainN = chainC.map(y => cleanT(cellText(y.tc))); const chainK = chainN.map(nrm);
+      const hit = q ? (n.includes(q) || chainK.some(k => k.includes(q))) : (knownDepts.has(n) || chainK.some(k => knownDepts.has(k)) || cellKind(g, o) === 'dept'); if (!hit) return;
       const targets = [], seen = new Set();
       const cand = [...colRole.keys()].filter(c => !(c >= o.c && c < o.c + o.cs)).sort((a, b) => Math.abs(a - o.c) - Math.abs(b - o.c));
       cand.forEach(c => { const cr = colRole.get(c), k = cr.role + cr.kind; if (seen.has(k)) return; const x = g.map.get(o.r + ',' + c); if (!x || x === o || hasTbl(x.tc)) return;
@@ -845,9 +858,10 @@ function deptPhoneScan(docs, query, knownDepts) {
         if (!targets.length) { const nb = nbOf(g, o); for (const d of ['below', 'above']) { const x = nb[d]; if (!x || hasTbl(x.tc)) continue; const m = mk(x, d, nb); if (m) { targets.push(m); break; } } }
       }
       /* 같은 줄(없으면 바로 위·아래 칸)의 직책/이름 — 있으면 「부서·직책」 단위로 따로 묶음 */
-      let who = whoOf(g, o, true, true);   /* 직책만 (사람 이름은 묶음 기준으로 쓰지 않음) */
+      let who = whoOf(g, o, true, false);   /* 같은 줄의 사람 이름(없으면 직책) */
       if (!who) { const nb = nbOf(g, o); for (const d of ['below', 'above']) { const x = nb[d]; const tt = x && !hasTbl(x.tc) ? titleOfText(cellText(x.tc)) : ''; if (tt) { who = tt; break; } } }
-      if (targets.length) res.push({ key: n + (who ? '·' + who : ''), form: t + (who ? '·' + who : ''), o, g, di, targets });
+      const fk = chainK.concat([n]).join('·'), ff = chainN.concat([t]).join('·');
+      if (targets.length) res.push({ key: fk + (who ? '·' + who : ''), form: ff + (who ? '·' + who : ''), o, g, di, targets });
     });
   }));
   return res;
@@ -859,7 +873,8 @@ function inferFill(list) {
     let k = String(key), kind = ''; const m = k.match(/\(무선\)$/); if (m) { kind = '(무선)'; k = k.slice(0, -4); }
     const parts = k.split('·').map(x => x.trim()).filter(Boolean); let dept = '', person = '';
     const isOrg = x => ORG_END.test(nrm(x)) && !isPerson(nrm(x));
-    if (parts.length >= 2) { dept = parts.slice(0, -1).join('·'); person = parts[parts.length - 1]; }
+    if (parts.length >= 2 && isOrg(parts[parts.length - 1])) dept = parts.join('·');   /* 부서·팀 */
+    else if (parts.length >= 2) { dept = parts.slice(0, -1).join('·'); person = parts[parts.length - 1]; }
     else if (parts.length === 1) { if (isOrg(parts[0])) dept = parts[0]; else if (/^[가-힣]{2,4}$/.test(nrm(parts[0]))) person = parts[0]; }
     return { kind, dept: normK(dept), person: normK(person) };
   };
@@ -918,7 +933,7 @@ function harvestBook(SC, allP, vars) {
         if (hdrRow(g, o)) { let x = g.map.get((nb.below.r + nb.below.rs) + ',' + o.c); while (x && numOf(x)) { targets.push(x); x = g.map.get((x.r + x.rs) + ',' + o.c); } }
       } else if (numOf(nb.left)) targets = [nb.left];
       else if (numOf(nb.above)) targets = [nb.above];
-      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = whoOf(g, cell, ti > 0); if (d || p) put(d && d.n, p, role, numOf(cell), phoneKind(n)); });
+      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = whoOf(g, cell, ti > 0), ro = rowOrgs(g, cell), dk = ro.length >= 2 ? ro.join('·') : (d && d.n); if (dk || p) put(dk, p, role, numOf(cell), phoneKind(n)); });
     });
   });
   /* 문단: "행정과 전화 041-830-2000" 처럼 알려진 부서명과 번호가 한 줄에 있는 경우 */
@@ -959,9 +974,12 @@ function analyze(docs, minN, around, opts) {
           const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t) && (!isLabelish(t) || titleOfText(t))) labs.push(t); }
           const orgs = labs.filter(t => !isPerson(nrm(t)) && !titleOfText(t)), base = orgs.length ? orgs[orgs.length - 1] : '';
           const lastL = labs.length ? labs[labs.length - 1] : '', lastT = lastL ? titleOfText(lastL) : '';
-          /* 번호 바로 앞이 사람 이름이면 부서·이름, 직책(과장·팀장·담당자)이면 부서·직책 */
-          const tail = lastL && isPerson(nrm(lastL)) ? lastL : (lastT && base ? lastT : '');
-          const lab = tail ? (base ? base + '·' : '') + tail : base;
+          /* 부서와 팀이 함께 나오면 「부서·팀」으로 묶음 */
+          const oo = orgs.filter(t => ORG_END.test(nrm(t))), chain = (base && oo.length >= 2 && oo[oo.length - 1] === base && nrm(oo[oo.length - 2]) !== nrm(base)) ? oo[oo.length - 2] + '·' + base : base;
+          /* 번호 바로 앞이 사람 이름이면 (부서·팀·)이름, 직책(과장·팀장·담당자)이면 (부서·팀·)직책. 직책 앞에 이름이 있으면 이름 */
+          const prevL = labs.length > 1 ? labs[labs.length - 2] : '';
+          const tail = lastL && isPerson(nrm(lastL)) ? lastL : (lastT && prevL && isPerson(nrm(prevL)) ? prevL : (lastT && base ? lastT : ''));
+          const lab = tail ? (chain ? chain + '·' : '') + tail : chain;
           cells.push({ tbl, tc, val: tx, role: (faxcols.has(col) || (i > 0 && FAX_LAB(nrm(labels[i - 1])))) ? '팩스' : '전화', label: lab, base, hasfax: faxcols.size > 0, row: tcs, labels, i });
         });
       });
