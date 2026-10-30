@@ -546,6 +546,23 @@ function nbOf(g, o) {
   const at = (r, c) => { const x = g.map.get(r + ',' + c); return x && x !== o ? x : null; };
   return { right: at(o.r, o.c + o.cs), below: at(o.r + o.rs, o.c), left: at(o.r, o.c - 1), above: at(o.r - 1, o.c) };
 }
+const NAME_HDR = /^(성명|이름|담당자|담당자명|직원명|담당자성명|근무자)$/;
+/* 표에서 어느 칸 옆(같은 행, 없으면 바로 위 2행 이내)에 있는 사람 이름 */
+function personOf(g, cell, sameRow) {
+  const ok = o => {
+    if (!o || o === cell || hasTbl(o.tc)) return false;
+    const t = nrm(cellText(o.tc)); if (!/^[가-힣]{2,4}$/.test(t) || STOPN.has(t) || TITLES.test(t) || OTHER_LAB.test(t) || isDeptLabel(t) || PHONE_LAB(t) || FAX_LAB(t)) return false;
+    if (isPerson(t)) return true;
+    const left = g.map.get(o.r + ',' + (o.c - 1));
+    if (left && left !== o && NAME_HDR.test(nrm(cellText(left.tc)))) return true;
+    return g.list.some(x => x.c <= o.c && o.c < x.c + x.cs && x.r < o.r && NAME_HDR.test(nrm(cellText(x.tc))));
+  };
+  const near = list => { let b = null, bd = 1e9; list.forEach(x => { const d = Math.abs(x.c - cell.c) + Math.abs(x.r - cell.r) * 0.01; if (d < bd) { bd = d; b = x; } }); return b; };
+  let hit = near(g.list.filter(x => x.r < cell.r + cell.rs && x.r + x.rs > cell.r && ok(x)));
+  if (!hit && !sameRow) hit = near(g.list.filter(x => x.r < cell.r && cell.r - x.r <= 2 && ok(x)));
+  return hit ? nrm(cellText(hit.tc)) : '';
+}
+const hdrRow = (g, o) => g.list.some(x => x !== o && x.r === o.r && !hasTbl(x.tc) && (isDeptLabel(cellText(x.tc)) || NAME_HDR.test(nrm(cellText(x.tc)))));
 function scanDepts(docs, allP) {
   const names = new Map(), tinfo = new Map();
   const put = list => list.forEach(x => { if (!names.has(x.n)) names.set(x.n, x.form); });
@@ -579,7 +596,7 @@ function scanDepts(docs, allP) {
   return { names, tinfo };
 }
 function blankPhoneOps(SC, X) {
-  const { addVar, ops, cellP, subOpOf, allP } = X; let seq = 0; const used = new Set();
+  const { addVar, ops, cellP, subOpOf, allP, vars } = X; let seq = 0; const used = new Set();
   const single = SC.names.size === 1 ? [...SC.names.keys()][0] : null;
   const mk = (key, role) => { const v = addVar(key, role, ''); v.n++; return v; };
   const nextKey = role => (role === '팩스' ? '팩스번호' : '전화번호') + (++seq);
@@ -591,7 +608,7 @@ function blankPhoneOps(SC, X) {
       return strict ? (bd === 0 ? best : null) : best;
     };
     const phoneish = x => x && !hasTbl(x.tc) && cellText(x.tc) !== '' && /^[\d\s\-.()☎~/]*$/.test(cellText(x.tc));
-    const hdrOf = o => g.list.some(x => x !== o && x.r === o.r && !hasTbl(x.tc) && isDeptLabel(cellText(x.tc)));
+    const hdrOf = o => hdrRow(g, o);
     g.list.forEach(o => {
       if (hasTbl(o.tc)) return; const tx = cellText(o.tc); if (!tx) return; const n = nrm(tx);
       const role = PHONE_LAB(n) ? '전화' : FAX_LAB(n) ? '팩스' : null; if (!role) return;
@@ -601,13 +618,22 @@ function blankPhoneOps(SC, X) {
         if (hdrOf(o)) {
           /* 머리글 아래 열: 번호가 적힌 행은 건너뛰고, 부서가 있는 빈 행만 변수로 */
           let x = nb.below, first = true;
-          while (x && (phoneish(x) || (emptyCell(x) && (first || deptFor(x, true))))) { if (emptyCell(x)) targets.push(x); first = false; x = g.map.get((x.r + x.rs) + ',' + o.c); }
+          while (x && (phoneish(x) || (emptyCell(x) && (first || deptFor(x, true) || personOf(g, x, true))))) { if (emptyCell(x)) targets.push(x); first = false; x = g.map.get((x.r + x.rs) + ',' + o.c); }
         } else targets = [nb.below];
       } else if (emptyCell(nb.left)) targets = [nb.left];
       else if (emptyCell(nb.above)) targets = [nb.above];
       targets.forEach((cell, ti) => {
-        const d = ti === 0 ? deptFor(cell, false) : deptFor(cell, true);
-        const v = mk(d ? d.n : (single || nextKey(role)), role);
+        const d0 = ti === 0 ? deptFor(cell, false) : deptFor(cell, true), person = personOf(g, cell, ti > 0);
+        const dn = d0 ? d0.n : (person ? single : null);
+        /* 앞쪽에서 이미 같은 「부서·이름」 번호 변수가 있으면 그 변수를 함께 씀 → 한 번만 입력 */
+        let key;
+        if (person) {
+          const full = safeKey((dn ? dn + '·' : '') + person), cands = [...vars.values()].filter(v => v.col === role);
+          const same = cands.find(v => normK(v.key) === normK(full));
+          const byName = !dn ? cands.filter(v => normK(v.key.split('·').pop()) === normK(person)) : [];
+          key = same ? same.key : (byName.length === 1 ? byName[0].key : full);
+        } else key = dn || single || nextKey(role);
+        const v = mk(key, role);
         ops.push({ type: 'cell', tc: cell.tc, v }); used.add(cell.tc);
         Array.from(cell.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => cellP.add(p));
       });
@@ -628,6 +654,7 @@ function blankPhoneOps(SC, X) {
 }
 /* ---------- 전화번호부 읽기·부서 매칭 ---------- */
 const PHONE_RE = /(?:0\d{1,2}[-.])?\d{3,4}[-.]\d{4}/g;
+const normK = x => String(x || '').replace(/@.*$/, '').replace(/[\s·\/,.]/g, '');
 function parsePhoneBook(text) {
   const out = [];
   String(text || '').split(/\r?\n/).forEach(line => {
@@ -637,28 +664,40 @@ function parsePhoneBook(text) {
     dept = dept.split(/\t|,/).map(x => x.trim()).find(x => /[가-힣A-Za-z]/.test(x)) || ''; if (!dept) return;
     let tel = '', fax = '';
     ms.forEach(m => { const pre = line.slice(Math.max(0, m.index - 6), m.index); if (/팩스|FAX|fax|Fax|F\s*[:.]?\s*$/.test(pre)) { if (!fax) fax = m[0]; } else if (!tel) tel = m[0]; else if (!fax) fax = m[0]; });
-    out.push({ dept, n: nrm(safeKey(dept)), tel, fax });
+    out.push({ dept, n: normK(dept), tel, fax, comp: /\s/.test(dept.trim()) });
   });
   return out;
 }
 function pbMatch(base, list) {
-  const n = nrm(String(base).replace(/@.*$/, ''));
+  const raw = String(base).replace(/@.*$/, ''), n = normK(raw);
   const r = list.find(x => x.n === n); if (r) return r;
-  const c = list.filter(x => x.n.length >= 3 && n.length >= 3 && (n.includes(x.n) || x.n.includes(n)));
+  /* 「부서·이름」 변수: 이름만 있는 줄과 짝지음 */
+  if (raw.indexOf('·') >= 0) {
+    const last = normK(raw.split('·').pop());
+    const c = last.length >= 2 ? list.filter(x => x.n === last) : [];
+    return c.length === 1 ? c[0] : null;
+  }
+  const c = list.filter(x => x.n.length >= 3 && n.length >= 3 && !x.comp && (n.includes(x.n) || x.n.includes(n)));
   return c.length === 1 ? c[0] : null;
 }
 /* 문서 안에 이미 적힌 「부서명 + 전화/팩스번호」 쌍 수집 */
 function harvestBook(SC, allP, vars) {
   const m = new Map();
-  const put = (dept, role, num) => {
-    const n = nrm(safeKey(dept)); if (!n || !num) return;
-    const r = m.get(n) || { dept, n, tel: '', fax: '' }; m.set(n, r);
-    if (role === '팩스') { if (!r.fax) r.fax = num; } else if (!r.tel) r.tel = num;
+  const put1 = (dept, role, num, comp) => {
+    const n = normK(dept); if (!n || !num) return;
+    const r = m.get(n) || { dept, n, comp: !!comp, tel: '', fax: '', telC: false, faxC: false }; m.set(n, r);
+    const f = role === '팩스' ? 'fax' : 'tel';
+    if (!r[f]) r[f] = num; else if (r[f] !== num) r[f + 'C'] = true;   /* 같은 이름에 번호가 둘이면 충돌 → 자동 입력 안 함 */
   };
   const numOf = x => {
     if (!x || hasTbl(x.tc)) return ''; const t = cellText(x.tc); if (!t) return '';
     const mm = t.match(new RegExp(PHONE_RE.source)); if (!mm) return '';
     return /[가-힣]/.test(t.replace(mm[0], '')) ? '' : mm[0];
+  };
+  /* 부서·이름 / 이름 / 부서 세 가지 열쇠로 모음 */
+  const put = (dept, person, role, num) => {
+    if (person) { put1((dept ? dept + '·' : '') + person, role, num, true); put1(person, role, num, true); }
+    if (dept) put1(dept, role, num);
   };
   SC.tinfo.forEach(({ g, depts }) => {
     const deptFor = (cell, strict) => {
@@ -674,22 +713,21 @@ function harvestBook(SC, allP, vars) {
       if (numOf(nb.right)) targets = [nb.right];
       else if (numOf(nb.below)) {
         targets = [nb.below];
-        const hdr = g.list.some(x => x !== o && x.r === o.r && !hasTbl(x.tc) && isDeptLabel(cellText(x.tc)));
-        if (hdr) { let x = g.map.get((nb.below.r + nb.below.rs) + ',' + o.c); while (x && numOf(x)) { targets.push(x); x = g.map.get((x.r + x.rs) + ',' + o.c); } }
+        if (hdrRow(g, o)) { let x = g.map.get((nb.below.r + nb.below.rs) + ',' + o.c); while (x && numOf(x)) { targets.push(x); x = g.map.get((x.r + x.rs) + ',' + o.c); } }
       } else if (numOf(nb.left)) targets = [nb.left];
       else if (numOf(nb.above)) targets = [nb.above];
-      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0); if (d) put(d.n, role, numOf(cell)); });
+      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = personOf(g, cell, ti > 0); if (d || p) put(d && d.n, p, role, numOf(cell)); });
     });
   });
   /* 문단: "행정과 전화 041-830-2000" 처럼 알려진 부서명과 번호가 한 줄에 있는 경우 */
   const known = [...SC.names.keys()].map(k => ({ n: k, dept: SC.names.get(k) }));
   allP.forEach(([p, full]) => {
     if (!full || !known.length) return;
-    parsePhoneBook(full).forEach(d => { const k = pbMatch(d.dept, known); if (k) { put(k.n, '전화', d.tel); put(k.n, '팩스', d.fax); } });
+    parsePhoneBook(full).forEach(d => { const k = pbMatch(d.dept, known); if (k) { put(k.dept, '', '전화', d.tel); put(k.dept, '', '팩스', d.fax); } });
   });
   /* 이미 변수로 잡힌 전화·팩스의 원래 값 */
-  vars.forEach(v => { if ((v.col === '전화' || v.col === '팩스') && v.def && !isLabelish(v.key) && !/^(전화|팩스)번호\d+$/.test(v.key) && new RegExp(PHONE_RE.source).test(v.def)) put(v.key, v.col, v.def.match(new RegExp(PHONE_RE.source))[0]); });
-  return [...m.values()].filter(r => r.tel || r.fax);
+  vars.forEach(v => { if ((v.col === '전화' || v.col === '팩스') && v.def && !isLabelish(v.key) && !/^(전화|팩스)번호\d+$/.test(v.key) && new RegExp(PHONE_RE.source).test(v.def)) { const pp = v.key.split('·'); put(pp.length > 1 ? pp.slice(0, -1).join('·') : v.key, pp.length > 1 ? pp[pp.length - 1] : '', v.col, v.def.match(new RegExp(PHONE_RE.source))[0]); } });
+  return [...m.values()].map(r => ({ ...r, tel: r.telC ? '' : r.tel, fax: r.faxC ? '' : r.fax })).filter(r => r.tel || r.fax);
 }
 function analyze(docs, minN, around, opts) {
   opts = opts || { dept: true, blank: true };
@@ -799,7 +837,7 @@ function analyze(docs, minN, around, opts) {
     if (NAMERE) for (const m of full.matchAll(NAMERE)) { const n = m[1] || m[2], vr = addVar(n, '명', nameform(n)); vr.n++; subs.push({ a: m.index, b: m.index + m[0].length, v: vr }); }
     if (subs.length) { const so = { type: 'sub', p, subs }; ops.push(so); subOpOf.set(p, so); }
   });
-  if (opts.blank && SC) blankPhoneOps(SC, { addVar, ops, cellP, subOpOf, allP });
+  if (opts.blank && SC) blankPhoneOps(SC, { addVar, ops, cellP, subOpOf, allP, vars });
   ops.forEach((o, i) => o.idx = i);
   let book = [], autoN = 0;
   if (opts.blank && SC) {
