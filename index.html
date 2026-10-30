@@ -107,7 +107,7 @@ const FIREBASE_CONFIG = {
 // 관리자(파일 등록자)로 허용할 이메일 도메인. 비워 두면 모든 구글 계정 허용.
 const ADMIN_EMAIL_DOMAINS = [];
 /* ===================================================== */
-const MAX_FILE = 20 * 1024 * 1024, CHUNK = 700000, COLS = ["명", "담당", "직위", "전화", "팩스", "부서", "비고"];
+const MAX_FILE = 50 * 1024 * 1024, CHUNK = 700000, COLS = ["명", "담당", "직위", "전화", "팩스", "부서", "비고"];
 const $ = s => document.querySelector(s), app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let toastT;
@@ -1068,7 +1068,7 @@ function startEditor(plan, sel, host, onState) {
 }
 
 /* ---------- 여러 파일 지원 ---------- */
-const MAX_FILES = 10, MAX_TOTAL = 60 * 1024 * 1024;
+const MAX_FILES = 10, MAX_TOTAL = 100 * 1024 * 1024;
 const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const normKeys = a => (a || []).map(x => Array.isArray(x) ? { k: x[0], d: x[1] || '', n: x[2] || 0 } : { k: x.k, d: x.d || '', n: x.n || 0 });
 function normFiles(sheet) {
@@ -1176,7 +1176,7 @@ function prepWidget(host, o) {
   const $$ = s => host.querySelector(s);
   host.innerHTML = `<div class="nf3"${o.lead ? '' : ' style="grid-template-columns:minmax(240px,1.6fr) minmax(300px,auto)"'}>
       ${o.lead ? '<div>' + o.lead + '</div>' : ''}
-      <div><label>한글 파일 (.hwpx, 20MB 이하${multi ? ' · 여러 개 가능' : ''})</label><input type="file" id="pw_in" accept=".hwpx" ${multi ? 'multiple' : ''} hidden>
+      <div><label>한글 파일 (.hwpx, 50MB 이하${multi ? ' · 여러 개 가능' : ''})</label><input type="file" id="pw_in" accept=".hwpx" ${multi ? 'multiple' : ''} hidden>
         <div class="drop-zone sm" id="pw_dz"><div class="dz-ico">📂</div><div class="dz-main" id="pw_dzm"></div></div></div>
       <div id="pw_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:wrap"><select id="pw_min" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="전화·팩스번호가 있는 줄의 앞뒤 칸 단어(부서명·담당자·직위 등)와, 본문에서 번호 앞에 붙은 부서명도 변수로 잡습니다"><input type="checkbox" id="pw_ard" checked>앞뒤 단어도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="문서에서 '부서'라고 적힌 글자의 앞뒤 단어(표의 옆·아래 칸 포함)를 부서명으로 찾아 변수로 잡습니다"><input type="checkbox" id="pw_dep" checked>'부서' 앞뒤 단어도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="'전화번호'·'팩스'라고 적힌 칸의 상하좌우 빈칸을 변수로 만듭니다 (나중에 전화번호부로 일괄 입력)"><input type="checkbox" id="pw_blk" checked>전화·팩스 빈칸도</label><button id="pw_find" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
     </div>
@@ -1204,7 +1204,7 @@ function prepWidget(host, o) {
   function add(list) {
     for (const f of Array.from(list)) {
       if (!/\.hwpx$/i.test(f.name)) { toast('.hwpx 파일만 올릴 수 있습니다: ' + f.name); continue; }
-      if (f.size > MAX_FILE) { toast('20MB를 넘는 파일입니다: ' + f.name); continue; }
+      if (f.size > MAX_FILE) { toast('50MB를 넘는 파일입니다: ' + f.name); continue; }
       if (items.some(it => it.file.name === f.name && it.file.size === f.size)) continue;
       if (!multi && items.length) items = [];
       if (items.length >= MAX_FILES) { toast('파일은 ' + MAX_FILES + '개까지 올릴 수 있습니다.'); break; }
@@ -1247,7 +1247,7 @@ function prepWidget(host, o) {
       const it = items[i]; msg('(' + (i + 1) + '/' + items.length + ') ' + it.file.name + ' — 변수를 문서에 넣는 중…'); await new Promise(r => setTimeout(r, 30));
       if (mode() === 'auto') { const r = await convertFile(null, it.sel, it.plan, it.ctx.docs, it.ctx.z); out.push({ name: it.file.name, bytes: r.bytes, keys: r.keys }); }
       else { const bytes = new Uint8Array(await it.file.arrayBuffer()), found = await scanVars(bytes); if (!found.length) throw new Error(it.file.name + ': {{변수}} 글자를 찾지 못했습니다.'); out.push({ name: it.file.name, bytes, keys: found.map(([k, n]) => [k, defs[k] || '', n]) }); }
-      if (out[i].bytes.length > MAX_FILE) throw new Error(it.file.name + ': 변환한 파일이 20MB를 넘습니다.');
+      if (out[i].bytes.length > MAX_FILE) throw new Error(it.file.name + ': 변환한 파일이 50MB를 넘습니다.');
     }
     items.forEach(it => { it.plan = null; it.ctx = null; });
     return out;
