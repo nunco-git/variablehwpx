@@ -460,11 +460,14 @@ function adminPanel(u, ref, sheet, C) {
 
 /* ---------- 자동 변수 만들기 (원본 한글 파일 → 변수형) ---------- */
 const HPNS = 'http://www.hancom.co.kr/hwpml/2011/paragraph';
-const NUM_FULL = /^0\d{1,2}-\d{3,4}-\d{4}$/, PH0 = '000-000-0000', FAXH = /팩스|fax|FAX|Fax/;
+/* 전화번호 모양: 041-830-2000 · (041)830-2000 · 041.830.2000 · 041 830 2000 · 830-2000 · 1588-1234 */
+const NA = String.raw`(?:\(?0\d{1,2}\)\s*|0\d{1,2}[-.\s]\s*)\d{3,4}[-.\s]\d{4}`, NC = String.raw`1[5-8]\d{2}-\d{4}`, NB = String.raw`\d{3}-\d{4}`;
+const NUM_FULL = new RegExp('^(?:' + NA + '|' + NC + '|' + NB + ')$'), NUMG = new RegExp('(?<![\\d-])(' + NA + '|' + NC + '|' + NB + ')(?![\\d-])', 'g'), PH0 = '000-000-0000', FAXH = /팩스|fax|FAX|Fax/;
 const ORG_END = /(과|서|센터|본부|공사|지사|지국|소|청|팀|담당관|실|단|대|협회|병원|의원|회|부|국|원|처|위)$/;
 const TITLES = /^(과장|팀장|주무관|담당|계장|국장|소장|실장|부군수|군수|부서장|담당자|팀원|주사|주사보|서기|서기보|면장|읍장|동장|센터장|단장|반장|대리|사무관|서무)$/;
 const STOPN = new Set(['구분', '비고', '내용', '연락처', '전화', '담당자', '이름', '직위', '직책', '계', '소계', '합계', '기타', '해당없음', '성명']);
-const isPerson = x => /^[가-힣]{3}$/.test(x) && !/(읍|면|동|시|군|과|국|소|서|실|팀|청|원|부|단|반|장)$/.test(x);
+const EXTRA_PERSON = new Set();   /* 「성명」 머리글 아래 등에서 사람 이름으로 확인된 것 (홍길동·김대원처럼 끝 글자가 기관명과 같은 이름 포함) */
+const isPerson = x => (/^[가-힣]{3}$/.test(x) && !/(읍|면|동|시|군|과|국|소|서|실|팀|청|원|부|단|반|장)$/.test(x)) || EXTRA_PERSON.has(x);
 const nrm = s => s.replace(/\s+/g, '');
 const kidsOf = (e, n) => Array.from(e.childNodes).filter(c => c.nodeType === 1 && c.localName === n);
 const hasTbl = tc => tc.getElementsByTagNameNS(HPNS, 'tbl').length > 0;
@@ -554,15 +557,50 @@ function nbOf(g, o) {
 }
 const NAME_HDR = /^(성명|이름|담당자|담당자명|직원명|담당자성명|근무자)$/;
 /* 표에서 어느 칸 옆(같은 행, 없으면 바로 위 2행 이내)에 있는 사람 이름 */
+function inNameCol(g, o) {
+  const t = nrm(cellText(o.tc)); if (!/^[가-힣]{2,4}$/.test(t) || STOPN.has(t) || TITLES.test(t) || OTHER_LAB.test(t) || isDeptLabel(t) || PHONE_LAB(t) || FAX_LAB(t)) return false;
+  const left = g.map.get(o.r + ',' + (o.c - 1));
+  if (left && left !== o && NAME_HDR.test(nrm(cellText(left.tc)))) return true;
+  const minR = Math.min(...g.list.map(y => y.r));
+  return g.list.some(x => x.r === minR && x.c <= o.c && o.c < x.c + x.cs && x.r < o.r && NAME_HDR.test(nrm(cellText(x.tc))));
+}
+function isPersonCell(g, o) {
+  if (!o || hasTbl(o.tc)) return false;
+  const t = nrm(cellText(o.tc)); if (!/^[가-힣]{2,4}$/.test(t) || STOPN.has(t) || TITLES.test(t) || OTHER_LAB.test(t) || isDeptLabel(t) || PHONE_LAB(t) || FAX_LAB(t)) return false;
+  return isPerson(t) || inNameCol(g, o);
+}
+/* 부서명·이름·전화번호가 있는 칸의 위·아래·좌·우 칸에 있는 단어를 모두 변수로 */
+function nbSweep(docs, X) {
+  const { dupnames, forced, pf, addVar, ops, cellP, vars } = X; const phoneRe = new RegExp(NUMG.source);
+  docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => {
+    const g = tblGrid(tbl), picks = [], pOf = o => Array.from(o.tc.getElementsByTagNameNS(HPNS, 'p'));
+    const minC = Math.min(...tblGrid(tbl).list.map(o => o.c));
+    const anchor = o => {
+      if (hasTbl(o.tc)) return false; const tx = cellText(o.tc); if (!tx) return false; const n = nrm(tx);
+      if (pOf(o).some(p => cellP.has(p))) return true;
+      if (dupnames.has(n) || forced.has(n)) return true;
+      return isPersonCell(g, o) && !isLabelish(tx);
+    };
+    g.list.forEach(o => { if (!anchor(o)) return; const nb = nbOf(g, o); [nb.right, nb.left, nb.below, nb.above].forEach(x => { if (x && !picks.includes(x)) picks.push(x); }); });
+    picks.forEach(x => {
+      if (hasTbl(x.tc)) return; const ps = pOf(x); if (ps.length !== 1 || cellP.has(ps[0])) return;
+      const tx = cellText(x.tc).trim(); if (!tx || tx.length > 30) return; const n = nrm(tx);
+      if (isLabelish(tx) || STOPN.has(n) || /[:：\n]/.test(tx) || phoneRe.test(tx) || !/[가-힣A-Za-z]/.test(tx) || dupnames.has(n) || forced.has(n)) return;
+      let col;
+      if (TITLES.test(n)) col = '직위';
+      else if (isPersonCell(g, x)) col = '담당';
+      else if (ORG_END.test(n) && n.length >= 2 && n.length <= 14 && okDeptVal(tx)) { forced.add(n); if (!pf.has(n)) pf.set(n, new Map([[tx.replace(/\s+/g, ' '), 1]])); return; }
+      else if (/^[가-힣]{3}$/.test(n) && !ORG_END.test(n)) col = '담당';
+      else { col = '비고'; const nbx = nbOf(g, x); if (x.c === minC && nbx.right && cellText(nbx.right.tc)) return; }   /* 맨 왼쪽 칸이면서 오른쪽에 값이 있으면 항목 이름(라벨)으로 보고 건너뜀 */
+      /* 이미 같은 글자의 같은 종류 변수가 있으면(예: 행정과·홍길동.담당) 그것을 함께 씀 */
+      const ex = [...vars.values()].find(w => w.col === col && w.def === tx);
+      const v = ex || addVar(safeKey(tx), col, tx); v.n++;
+      ops.push({ type: 'cell', tc: x.tc, v }); ps.forEach(p => cellP.add(p));
+    });
+  }));
+}
 function personOf(g, cell, sameRow) {
-  const ok = o => {
-    if (!o || o === cell || hasTbl(o.tc)) return false;
-    const t = nrm(cellText(o.tc)); if (!/^[가-힣]{2,4}$/.test(t) || STOPN.has(t) || TITLES.test(t) || OTHER_LAB.test(t) || isDeptLabel(t) || PHONE_LAB(t) || FAX_LAB(t)) return false;
-    if (isPerson(t)) return true;
-    const left = g.map.get(o.r + ',' + (o.c - 1));
-    if (left && left !== o && NAME_HDR.test(nrm(cellText(left.tc)))) return true;
-    return g.list.some(x => x.c <= o.c && o.c < x.c + x.cs && x.r < o.r && NAME_HDR.test(nrm(cellText(x.tc))));
-  };
+  const ok = o => o !== cell && isPersonCell(g, o);
   const near = list => { let b = null, bd = 1e9; list.forEach(x => { const d = Math.abs(x.c - cell.c) + Math.abs(x.r - cell.r) * 0.01; if (d < bd) { bd = d; b = x; } }); return b; };
   let hit = near(g.list.filter(x => x.r < cell.r + cell.rs && x.r + x.rs > cell.r && ok(x)));
   if (!hit && !sameRow) hit = near(g.list.filter(x => x.r < cell.r && cell.r - x.r <= 2 && ok(x)));
@@ -660,7 +698,7 @@ function blankPhoneOps(SC, X) {
   });
 }
 /* ---------- 전화번호부 읽기·부서 매칭 ---------- */
-const PHONE_RE = /(?:0\d{1,2}[-.])?\d{3,4}[-.]\d{4}/g;
+const PHONE_RE = new RegExp('(?<![\\d-])(?:' + NA + '|' + NC + '|' + NB + ')(?![\\d-])', 'g');
 const normK = x => String(x || '').replace(/@.*$/, '').replace(/[\s·\/,.]/g, '');
 function parsePhoneBook(text) {
   const out = [];
@@ -740,8 +778,10 @@ function harvestBook(SC, allP, vars) {
   return [...m.values()].map(r => ({ ...r, tel: r.telC ? '' : r.tel, fax: r.faxC ? '' : r.fax })).filter(r => r.tel || r.fax);
 }
 function analyze(docs, minN, around, opts) {
-  opts = opts || { dept: true, blank: true };
+  opts = opts || { dept: true, blank: true, nb: true };
   if (around === undefined) around = true;
+  EXTRA_PERSON.clear();
+  docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => { const g = tblGrid(tbl); g.list.forEach(o => { if (!hasTbl(o.tc) && inNameCol(g, o)) EXTRA_PERSON.add(nrm(cellText(o.tc))); }); }));
   const cells = [];
   docs.forEach(D => {
     for (const tbl of Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl'))) {
@@ -762,10 +802,10 @@ function analyze(docs, minN, around, opts) {
         tcs.forEach((tc, i) => {
           const tx = labels[i]; if (!NUM_FULL.test(tx) || tx === PH0 || span.includes(tc)) return;
           const ad = kidsOf(tc, 'cellAddr')[0], col = ad ? +ad.getAttribute('colAddr') : i;
-          const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t)) labs.push(t); }
+          const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t) && !isLabelish(t)) labs.push(t); }
           const orgs = labs.filter(t => !isPerson(nrm(t))), base = orgs.length ? orgs[orgs.length - 1] : '';
           const lab = labs.length && isPerson(nrm(labs[labs.length - 1])) ? (base ? base + '·' : '') + labs[labs.length - 1] : base;
-          cells.push({ tc, val: tx, role: faxcols.has(col) ? '팩스' : '전화', label: lab, base, hasfax: faxcols.size > 0, row: tcs, labels, i });
+          cells.push({ tbl, tc, val: tx, role: (faxcols.has(col) || (i > 0 && FAX_LAB(nrm(labels[i - 1])))) ? '팩스' : '전화', label: lab, base, hasfax: faxcols.size > 0, row: tcs, labels, i });
         });
       });
     }
@@ -773,11 +813,21 @@ function analyze(docs, minN, around, opts) {
   const cf = new Set(cells.filter(c => c.hasfax && c.role === '팩스').map(c => c.val)), cp = new Set(cells.filter(c => c.hasfax && c.role === '전화').map(c => c.val));
   cells.forEach(c => { if (!c.hasfax && cf.has(c.val) && !cp.has(c.val)) c.role = '팩스'; });
   // 번호 횟수
-  const NUMG = /(?<![\d-])(0\d{1,2}-\d{3,4}-\d{4})(?![\d-])/g, cnt = new Map(), allP = [];
+  const cnt = new Map(), allP = [];
   docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => {
     const full = pNodes(p).full; allP.push([p, full]);
     for (const m of full.matchAll(NUMG)) if (m[1] !== PH0) cnt.set(m[1], (cnt.get(m[1]) || 0) + 1);
   }));
+  let SC = null;
+  if (opts.dept || opts.blank || opts.nb) SC = scanDepts(docs, allP);
+  /* 같은 줄에서 부서·이름을 못 찾은 번호(위아래로 놓인 양식 등)는 표 안의 부서명·이름으로 이름 붙임 */
+  if (SC) cells.forEach(c => {
+    if (c.label) return; const ti = SC.tinfo.get(c.tbl); if (!ti) return; const o = ti.g.list.find(x => x.tc === c.tc); if (!o) return;
+    let best = null, bd = 1e9; ti.depts.forEach(d => { const dist = (d.r >= o.r && d.r < o.r + o.rs) ? 0 : Math.abs(d.r - o.r) + (d.r > o.r ? 0.5 : 0); if (dist < bd) { bd = dist; best = d; } });
+    if (best && !(ti.depts.length === 1 || bd <= 6)) best = null;
+    const p = personOf(ti.g, o); const lab = best ? best.n + (p ? '·' + p : '') : (p || '');
+    if (lab) { c.label = lab; c.base = best ? best.n : ''; }
+  });
   const dupv = new Set([...cnt].filter(([, c]) => c >= minN).map(([v]) => v));
   const vl = new Map(); cells.forEach(c => { if (dupv.has(c.val) && c.label) { const k = c.val + '|' + c.role; if (!vl.has(k)) vl.set(k, new Map()); const m = vl.get(k); const nl = nrm(c.label); m.set(nl, (m.get(nl) || 0) + 1); } });
   const used = new Map(), numkey = new Map();
@@ -802,8 +852,6 @@ function analyze(docs, minN, around, opts) {
       const n = mm[1]; if (n.length < 3 || !ORG_END.test(n) || isPerson(n) || STOPN.has(n) || TITLES.test(n) || dupnames.has(n)) continue;
       dupnames.add(n); forced.delete(n); if (!pf.has(n)) pf.set(n, new Map([[n, 1]])); } });
   }
-  let SC = null;
-  if (opts.dept || opts.blank) SC = scanDepts(docs, allP);
   if (SC && opts.dept) SC.names.forEach((form, n) => { if (!pf.has(n)) pf.set(n, new Map()); const mm = pf.get(n); mm.set(form, (mm.get(form) || 0) + 1); if (ORG_END.test(n)) { dupnames.add(n); forced.delete(n); } else if (!dupnames.has(n)) forced.add(n); });
   const nameform = n => [...pf.get(n).entries()].sort((a, b) => b[1] - a[1])[0][0];
   // 연산 목록
@@ -827,6 +875,7 @@ function analyze(docs, minN, around, opts) {
       const xv = addExtra(k, col, t); xv.n++; ops.push({ type: 'cell', tc: tcj, v: xv }); ps.forEach(p => cellP.add(p));
     }
   });
+  if (opts.nb) nbSweep(docs, { dupnames, forced, pf, addVar, ops, cellP, vars });
   docs.forEach(D => Array.from(D.doc.getElementsByTagNameNS(HPNS, 'tbl')).forEach(tbl => Array.from(tbl.getElementsByTagNameNS(HPNS, 'tc')).forEach(tc => {
     if (hasTbl(tc) || !(dupnames.size || forced.size)) return; const tx = cellText(tc); if (!tx) return;
     const ps = Array.from(tc.getElementsByTagNameNS(HPNS, 'p')); if (ps.some(p => cellP.has(p)) || ps.length !== 1) return;
@@ -1252,7 +1301,7 @@ function prepWidget(host, o) {
       ${o.lead ? '<div>' + o.lead + '</div>' : ''}
       <div><label>한글 파일 (.hwpx, 50MB 이하${multi ? ' · 여러 개 가능' : ''})</label><input type="file" id="pw_in" accept=".hwpx" ${multi ? 'multiple' : ''} hidden>
         <div class="drop-zone sm" id="pw_dz"><div class="dz-ico">📂</div><div class="dz-main" id="pw_dzm"></div></div></div>
-      <div id="pw_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:wrap"><select id="pw_min" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="전화·팩스번호가 있는 줄의 앞뒤 칸 단어(부서명·담당자·직위 등)와, 본문에서 번호 앞에 붙은 부서명도 변수로 잡습니다"><input type="checkbox" id="pw_ard" checked>앞뒤 단어도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="문서에서 '부서'라고 적힌 글자의 앞뒤 단어(표의 옆·아래 칸 포함)를 부서명으로 찾아 변수로 잡습니다"><input type="checkbox" id="pw_dep" checked>'부서' 앞뒤 단어도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="'전화번호'·'팩스'라고 적힌 칸의 상하좌우 빈칸을 변수로 만듭니다 (나중에 전화번호부로 일괄 입력)"><input type="checkbox" id="pw_blk" checked>전화·팩스 빈칸도</label><button id="pw_find" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
+      <div id="pw_auto"><label>변수로 만들 기준</label><div class="row" style="flex-wrap:wrap"><select id="pw_min" style="font:inherit;padding:6px;height:42px"><option value="1">한 번이라도 나오면 모두</option><option value="2">두 번 이상 나오는 것만</option></select><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="전화·팩스번호가 있는 줄의 앞뒤 칸 단어(부서명·담당자·직위 등)와, 본문에서 번호 앞에 붙은 부서명도 변수로 잡습니다"><input type="checkbox" id="pw_ard" checked>앞뒤 단어도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="문서에서 '부서'라고 적힌 글자의 앞뒤 단어(표의 옆·아래 칸 포함)를 부서명으로 찾아 변수로 잡습니다"><input type="checkbox" id="pw_dep" checked>'부서' 앞뒤 단어도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="'전화번호'·'팩스'라고 적힌 칸의 상하좌우 빈칸을 변수로 만듭니다 (나중에 전화번호부로 일괄 입력)"><input type="checkbox" id="pw_blk" checked>전화·팩스 빈칸도</label><label class="chk" style="margin:0 0 0 4px;white-space:nowrap" title="부서명·이름·전화번호가 있는 칸의 위·아래·좌·우 칸에 있는 단어를 모두 변수로 잡습니다 (불필요한 것은 표에서 체크 해제)"><input type="checkbox" id="pw_nb" checked>주변 칸 전부</label><button id="pw_find" type="button" style="height:42px;white-space:nowrap">변수 찾기</button></div></div>
     </div>
     <div id="pw_files" class="row" style="margin:10px 0 4px"></div>
     <label class="chk"><input type="radio" name="pw_nm" value="auto" checked> 변수가 없는 <b>원본 파일</b> — 전화·팩스번호와 부서명을 찾아 자동으로 변수로 바꿉니다</label>
@@ -1298,7 +1347,7 @@ function prepWidget(host, o) {
     const c = e.target.closest('.fchip'); if (c && items[+c.dataset.i] && items[+c.dataset.i].plan) show(+c.dataset.i);
   };
   const sync = () => { $$('#pw_auto').hidden = mode() !== 'auto'; $$('#pw_has').hidden = mode() !== 'has'; reset(); };
-  host.querySelectorAll('input[name=pw_nm]').forEach(r => r.onchange = sync); $$('#pw_min').onchange = reset; $$('#pw_ard').onchange = reset; $$('#pw_dep').onchange = reset; $$('#pw_blk').onchange = reset;
+  host.querySelectorAll('input[name=pw_nm]').forEach(r => r.onchange = sync); $$('#pw_min').onchange = reset; $$('#pw_ard').onchange = reset; $$('#pw_dep').onchange = reset; $$('#pw_blk').onchange = reset; $$('#pw_nb').onchange = reset;
   $$('#pw_find').onclick = async () => {
     if (!items.length) return toast('한글 파일을 선택해 주세요.');
     const b = $$('#pw_find'); b.disabled = true; let bad = 0;
@@ -1306,7 +1355,7 @@ function prepWidget(host, o) {
       for (let i = 0; i < items.length; i++) {
         const it = items[i]; if (it.plan) continue;
         msg('(' + (i + 1) + '/' + items.length + ') ' + it.file.name + ' — 전화·팩스번호와 부서명을 찾는 중…'); await new Promise(r => setTimeout(r, 30));
-        try { it.ctx = await loadDocs(new Uint8Array(await it.file.arrayBuffer())); it.plan = analyze(it.ctx.docs, +$$('#pw_min').value, $$('#pw_ard').checked, { dept: $$('#pw_dep').checked, blank: $$('#pw_blk').checked }); if (!it.plan.vars.length) { it.plan = null; it.ctx = null; bad++; toast(it.file.name + ': 변수로 만들 번호·부서명을 찾지 못했습니다.'); } else it.sel = new Set(it.plan.vars.map(v => v.id)); }
+        try { it.ctx = await loadDocs(new Uint8Array(await it.file.arrayBuffer())); it.plan = analyze(it.ctx.docs, +$$('#pw_min').value, $$('#pw_ard').checked, { dept: $$('#pw_dep').checked, blank: $$('#pw_blk').checked, nb: $$('#pw_nb').checked }); if (!it.plan.vars.length) { it.plan = null; it.ctx = null; bad++; toast(it.file.name + ': 변수로 만들 번호·부서명을 찾지 못했습니다.'); } else it.sel = new Set(it.plan.vars.map(v => v.id)); }
         catch (e) { bad++; toast(it.file.name + ': ' + e.message); }
       }
       msg(bad ? '변수를 찾지 못한 파일이 ' + bad + '개 있습니다. 목록에서 ✕로 빼거나 직접 변수를 추가해 주세요.' : '');
