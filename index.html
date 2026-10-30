@@ -869,8 +869,8 @@ function recount(plan) {
     else op.subs.forEach(s => { if (!s.off) s.v.n++; });
   });
 }
-function applyPlan(plan, sel) {
-  const tok = v => '{{' + v.id + '}}', counts = new Map();
+function applyPlan(plan, sel, valFn) {
+  const tok = valFn || (v => '{{' + v.id + '}}'), counts = new Map();
   const hit = v => counts.set(v.id, (counts.get(v.id) || 0) + 1);
   plan.ops.forEach(op => {
     if (op.off) return;
@@ -887,6 +887,18 @@ async function convertFile(bytes, sel, plan, docs, z) {
   const out = await z.generateAsync({ type: 'uint8array', mimeType: 'application/hwp+zip', compression: 'DEFLATE' });
   return { bytes: out, keys };
 }
+/* 편집 중인 문서를 건드리지 않고, 복사본에 현재 값을 넣은 hwpx 만들기 */
+async function buildWithValues(plan, sel, srcBytes) {
+  const m = new Map();
+  const docs2 = plan.docs.map(D => { const c = D.doc.cloneNode(true), lo = D.doc.getElementsByTagName('*'), lc = c.getElementsByTagName('*'); for (let i = 0; i < lo.length; i++) m.set(lo[i], lc[i]); return { name: D.name, doc: c }; });
+  const ops2 = plan.ops.map(op => op.type === 'sub' ? { ...op, p: m.get(op.p) } : { ...op, tc: m.get(op.tc) });
+  const keys = applyPlan({ ops: ops2, vars: plan.vars }, sel, v => v.def || '');
+  const z = await JSZip.loadAsync(srcBytes);
+  for (const D of docs2) { let out = new XMLSerializer().serializeToString(D.doc); if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>' + out; z.file(D.name, out, { createFolders: false }); }
+  if (z.file('mimetype')) z.file('mimetype', await z.file('mimetype').async('string'), { compression: 'STORE', createFolders: false });
+  const blob = await z.generateAsync({ type: 'blob', mimeType: 'application/hwp+zip', compression: 'DEFLATE' });
+  return { blob, keys };
+}
 async function loadDocs(bytes) {
   const z = await JSZip.loadAsync(bytes), docs = [];
   for (const n of Object.keys(z.files).filter(n => /^Contents\/section\d+\.xml$/i.test(n)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]))) {
@@ -899,7 +911,7 @@ async function loadDocs(bytes) {
 
 /* ---------- 변수 확인·편집 (등록 전 미리보기) ---------- */
 const PV_COLS = ['명', '담당', '직위', '전화', '팩스', '부서', '비고'];
-function startEditor(plan, sel, host, onState) {
+function startEditor(plan, sel, host, onState, getBytes, fileName) {
   const docs = plan.docs, fullOf = new Map(plan.allP), pidMap = new Map(), pidList = [];
   const cellOp = new Map(), subsBy = new Map();
   const pidOf = p => { if (!pidMap.has(p)) { pidMap.set(p, pidList.length); pidList.push(p); } return pidMap.get(p); };
@@ -907,6 +919,7 @@ function startEditor(plan, sel, host, onState) {
   let sec = 0, pending = null, filter = '', findPos = -1, findText = '';
   host.innerHTML = `<div class="card" style="margin-top:12px"><h2 id="evh"></h2>
     <p class="muted">체크한 항목만 변수로 바뀝니다. 아래 미리보기에서 색이 칠해진 글자가 변수가 될 자리입니다. 칸을 눌러 이 자리만 해제하거나, 글자를 드래그해서 새 변수를 추가할 수 있습니다.</p>
+    <div class="row" style="margin:8px 0"><button type="button" class="pri" id="dl_now">변경한 내용 그대로 내려받기 (.hwpx)</button><span class="muted" id="dl_m">등록하지 않고 지금 상태의 한글 파일을 바로 받습니다. 표의 「값」을 고치면 그 값이 문서의 모든 자리에 들어갑니다.</span></div>
     <div class="row" style="margin:8px 0"><b>바로 바꾸기</b><input type="text" id="fr_f" placeholder="찾을 글자" style="flex:1 1 150px"><span>→</span><input type="text" id="fr_t" placeholder="바꿀 글자 (비우면 삭제)" style="flex:1 1 150px"><button type="button" id="fr_c">몇 곳?</button><button type="button" id="fr_r">모두 바꾸기</button><span class="muted" id="fr_m"></span></div>
     <details style="margin:8px 0"><summary style="cursor:pointer"><b>전화번호부 일괄 입력</b> <span class="muted">— 부서별 전화·팩스 변수에 한 번에 넣기</span></summary>
     <p class="muted">문서에서 <b>처음 나온 번호</b>는 같은 부서·이름의 뒤쪽 빈칸에 자동으로 들어갑니다. 아래 붙여넣기는 문서에 번호가 없어 비어 있는 부서를 채울 때 쓰세요. 엑셀에서 「부서명 / 전화번호 / 팩스번호」를 복사해 붙여넣으면 변수 이름(부서명)이 같은 전화·팩스 변수의 원래 값으로 입력됩니다.</p>
@@ -927,12 +940,25 @@ function startEditor(plan, sel, host, onState) {
     recount(plan); plan.vars = plan.vars.filter(v => v.n > 0);
     const total = plan.vars.reduce((a, v) => a + v.n, 0);
     $$('#evh').textContent = `찾은 변수 ${plan.vars.length}종 · 문서 ${total}곳`;
-    $$('#vt').innerHTML = '<tr><th></th><th>변수</th><th>종류</th><th>원래 값</th><th>횟수</th><th></th></tr>' + plan.vars.map((v, i) => `<tr data-i="${i}"${filter && !(v.key + v.col + v.def).includes(filter) ? ' hidden' : ''}><td><input type="checkbox" data-id="${esc(v.id)}" ${sel.has(v.id) ? 'checked' : ''}></td><td>${esc(v.key)}</td><td>${esc(v.col)}</td><td>${esc(v.def)}</td><td>${v.n}</td><td><button type="button" data-loc="${esc(v.id)}" style="padding:2px 8px">보기</button></td></tr>`).join('');
+    $$('#vt').innerHTML = '<tr><th></th><th>변수</th><th>종류</th><th>값 (고치면 모든 자리에 반영)</th><th>횟수</th><th></th></tr>' + plan.vars.map((v, i) => `<tr data-i="${i}"${filter && !(v.key + v.col + v.def).includes(filter) ? ' hidden' : ''}><td><input type="checkbox" data-id="${esc(v.id)}" ${sel.has(v.id) ? 'checked' : ''}></td><td>${esc(v.key)}</td><td>${esc(v.col)}</td><td><input type="text" data-def="${esc(v.id)}" value="${esc(v.def)}" style="width:100%;min-width:110px"></td><td>${v.n}</td><td><button type="button" data-loc="${esc(v.id)}" style="padding:2px 8px">보기</button></td></tr>`).join('');
     $$('#ps').textContent = '선택 ' + [...sel].filter(id => idOk(id)).length + ' / ' + plan.vars.length;
     onState();
   }
   const vis = () => Array.from($$('#vt').querySelectorAll('tr[data-i]')).filter(r => !r.hidden);
   $$('#vt').onchange = e => { const id = e.target.dataset && e.target.dataset.id; if (id === undefined) return; e.target.checked ? sel.add(id) : sel.delete(id); drawTable(); drawPv(); };
+  $$('#vt').addEventListener('input', e => { const id = e.target.dataset && e.target.dataset.def; if (id === undefined) return; const v = plan.vars.find(x => x.id === id); if (v) v.def = e.target.value; });
+  $$('#dl_now').onclick = async () => {
+    const b = $$('#dl_now'), m = $$('#dl_m'); if (!getBytes) return;
+    const ids = [...sel].filter(id => idOk(id)); if (!ids.length) return (m.textContent = '선택된 변수가 없습니다.');
+    b.disabled = true; m.textContent = '만드는 중…';
+    try {
+      const r = await buildWithValues(plan, sel, await getBytes());
+      const nm = (fileName || '문서.hwpx').replace(/\.hwpx$/i, '') + '_수정.hwpx';
+      dlBlob(r.blob, nm);
+      m.textContent = '내려받았습니다: ' + nm + ' (변수 ' + r.keys.length + '종 · ' + r.keys.reduce((a, k) => a + k[2], 0) + '곳)';
+    } catch (e) { m.textContent = '실패: ' + e.message; }
+    finally { b.disabled = false; }
+  };
   $$('#vt').onclick = e => { const id = e.target.dataset && e.target.dataset.loc; if (id !== undefined) locate(id); };
   $$('#pf').oninput = () => { filter = $$('#pf').value.trim(); $$('#vt').querySelectorAll('tr[data-i]').forEach(r => { r.hidden = !!filter && !r.textContent.includes(filter); }); };
   const all = on => { vis().forEach(r => { const c = r.querySelector('input'); on ? sel.add(c.dataset.id) : sel.delete(c.dataset.id); }); drawTable(); drawPv(); };
@@ -1244,7 +1270,7 @@ function prepWidget(host, o) {
   }
   function show(i) {
     active = i; const it = items[i]; if (!it || !it.plan) { $$('#pw_ed').innerHTML = ''; drawFiles(); return; }
-    startEditor(it.plan, it.sel, $$('#pw_ed'), () => { drawFiles(); fire(); });
+    startEditor(it.plan, it.sel, $$('#pw_ed'), () => { drawFiles(); fire(); }, async () => new Uint8Array(await it.file.arrayBuffer()), it.file.name);
     const h = $$('#pw_ed').querySelector('h2'); if (h && items.length > 1) h.textContent = '[' + it.file.name + '] ' + h.textContent;
     drawFiles(); fire();
   }
