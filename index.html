@@ -611,6 +611,18 @@ function nbSweep(docs, X) {
     });
   }));
 }
+/* 직책 글자인지 (과장·팀장·담당자…): 맞으면 정리된 글자, 아니면 '' */
+function titleOfText(t) { const n = nrm(String(t || '')).replace(/[(（][^)）]*[)）]/g, ''); return n && n.length <= 8 && TITLES.test(n) ? n : ''; }
+/* 같은 줄에서 전화칸과 가장 가까운 「직책 또는 사람 이름」 — 같은 부서에서 과장·팀장·담당자 번호가 섞이지 않게 변수 이름에 붙임 */
+function whoOf(g, cell, sameRow, titleOnly) {
+  let best = null, bd = 1e9;
+  g.list.forEach(x => {
+    if (x === cell || hasTbl(x.tc) || !(x.r < cell.r + cell.rs && x.r + x.rs > cell.r)) return;
+    const tx = cellText(x.tc), t = titleOfText(tx), p = !t && !titleOnly && isPersonCell(g, x); if (!t && !p) return;
+    const d = Math.abs(x.c - cell.c) + (p ? 0 : 0.1); if (d < bd) { bd = d; best = t || nrm(tx); }
+  });
+  return best || (sameRow || titleOnly ? '' : personOf(g, cell, false));
+}
 function personOf(g, cell, sameRow) {
   const ok = o => o !== cell && isPersonCell(g, o);
   const near = list => { let b = null, bd = 1e9; list.forEach(x => { const d = Math.abs(x.c - cell.c) + Math.abs(x.r - cell.r) * 0.01; if (d < bd) { bd = d; b = x; } }); return b; };
@@ -680,7 +692,7 @@ function blankPhoneOps(SC, X) {
     const hdrOf = o => hdrRow(g, o);
     const place = (cell, v) => { ops.push({ type: 'cell', tc: cell.tc, v }); used.add(cell.tc); Array.from(cell.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => cellP.add(p)); };
     const placePhone = (cell, role, kind, strict, sweep) => {
-      const d0 = deptFor(cell, strict || sweep), person = personOf(g, cell, strict || sweep);
+      const d0 = deptFor(cell, strict || sweep), person = whoOf(g, cell, strict || sweep);
       const rowD = g.list.find(y => y !== cell && y.r < cell.r + cell.rs && y.r + y.rs > cell.r && cellKind(g, y) === 'dept');
       const noDeptInTable = !g.list.some(y => cellKind(g, y) === 'dept') && !depts.length;
       const dn = d0 ? d0.n : (rowD ? nrm(cellText(rowD.tc)) : (person && noDeptInTable ? single : null));
@@ -817,12 +829,25 @@ function deptPhoneScan(docs, query, knownDepts) {
       const cand = [...colRole.keys()].filter(c => !(c >= o.c && c < o.c + o.cs)).sort((a, b) => Math.abs(a - o.c) - Math.abs(b - o.c));
       cand.forEach(c => { const cr = colRole.get(c), k = cr.role + cr.kind; if (seen.has(k)) return; const x = g.map.get(o.r + ',' + c); if (!x || x === o || hasTbl(x.tc)) return;
         const xt = txt(x); const st = BLANKISH(xt) ? 'missing' : numCell(xt) ? 'has' : null; if (!st) return; seen.add(k); targets.push({ x, role: cr.role, kind: cr.kind, status: st, text: xt, num: st === 'has' ? (cleanT(xt).replace(numIn(xt), '').trim() ? xt : numIn(xt)) : '' }); });
-      if (!targets.length) {   /* 번호 열을 모르면 바로 옆 칸 (오른쪽 → 왼쪽 → 아래 → 위) */
-        const nb = nbOf(g, o);
-        for (const d of ['right', 'left', 'below', 'above']) { const x = nb[d]; if (!x || hasTbl(x.tc)) continue; const xt = txt(x); const st = BLANKISH(xt) ? 'missing' : numCell(xt) ? 'has' : null; if (!st) continue;
-          const lab = d === 'right' ? nb.left : null; targets.push({ x, role: lab && FAX_LAB(nrm(txt(lab))) ? '팩스' : '전화', kind: '', status: st, text: xt, num: st === 'has' ? (cleanT(xt).replace(numIn(xt), '').trim() ? xt : numIn(xt)) : '' }); break; }
+      if (!targets.length) {   /* 번호 열을 모르면 같은 줄에서 직책·이름 칸을 건너뛰며 오른쪽 → 왼쪽, 그다음 아래 → 위 */
+        const mk = (x, d, nb) => { const xt = txt(x); const st = BLANKISH(xt) ? 'missing' : numCell(xt) ? 'has' : null; if (!st) return null;
+          const lab = d === 'right' ? nb.left : null; return { x, role: lab && FAX_LAB(nrm(txt(lab))) ? '팩스' : '전화', kind: '', status: st, text: xt, num: st === 'has' ? (cleanT(xt).replace(numIn(xt), '').trim() ? xt : numIn(xt)) : '' }; };
+        for (const d of ['right', 'left']) {
+          let cur = o, nb0 = nbOf(g, o);
+          for (let step = 0; step < 4 && !targets.length; step++) {
+            const nb = nbOf(g, cur), x = nb[d]; if (!x || hasTbl(x.tc)) break; const xt = txt(x);
+            const m = mk(x, d, nb); if (m) { targets.push(m); break; }
+            if (xt.length > 12 || (!titleOfText(xt) && !isPersonCell(g, x) && step > 0)) break;   /* 직책·이름·짧은 글자 칸만 건너뜀 */
+            cur = x;
+          }
+          if (targets.length) break;
+        }
+        if (!targets.length) { const nb = nbOf(g, o); for (const d of ['below', 'above']) { const x = nb[d]; if (!x || hasTbl(x.tc)) continue; const m = mk(x, d, nb); if (m) { targets.push(m); break; } } }
       }
-      if (targets.length) res.push({ key: n, form: t, o, g, di, targets });
+      /* 같은 줄(없으면 바로 위·아래 칸)의 직책/이름 — 있으면 「부서·직책」 단위로 따로 묶음 */
+      let who = whoOf(g, o, true, true);   /* 직책만 (사람 이름은 묶음 기준으로 쓰지 않음) */
+      if (!who) { const nb = nbOf(g, o); for (const d of ['below', 'above']) { const x = nb[d]; const tt = x && !hasTbl(x.tc) ? titleOfText(cellText(x.tc)) : ''; if (tt) { who = tt; break; } } }
+      if (targets.length) res.push({ key: n + (who ? '·' + who : ''), form: t + (who ? '·' + who : ''), o, g, di, targets });
     });
   }));
   return res;
@@ -893,7 +918,7 @@ function harvestBook(SC, allP, vars) {
         if (hdrRow(g, o)) { let x = g.map.get((nb.below.r + nb.below.rs) + ',' + o.c); while (x && numOf(x)) { targets.push(x); x = g.map.get((x.r + x.rs) + ',' + o.c); } }
       } else if (numOf(nb.left)) targets = [nb.left];
       else if (numOf(nb.above)) targets = [nb.above];
-      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = personOf(g, cell, ti > 0); if (d || p) put(d && d.n, p, role, numOf(cell), phoneKind(n)); });
+      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = whoOf(g, cell, ti > 0); if (d || p) put(d && d.n, p, role, numOf(cell), phoneKind(n)); });
     });
   });
   /* 문단: "행정과 전화 041-830-2000" 처럼 알려진 부서명과 번호가 한 줄에 있는 경우 */
@@ -931,9 +956,12 @@ function analyze(docs, minN, around, opts) {
         tcs.forEach((tc, i) => {
           const tx = labels[i]; if (!NUM_FULL.test(tx) || tx === PH0 || span.includes(tc)) return;
           const ad = kidsOf(tc, 'cellAddr')[0], col = ad ? +ad.getAttribute('colAddr') : i;
-          const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t) && !isLabelish(t)) labs.push(t); }
-          const orgs = labs.filter(t => !isPerson(nrm(t))), base = orgs.length ? orgs[orgs.length - 1] : '';
-          const lab = labs.length && isPerson(nrm(labs[labs.length - 1])) ? (base ? base + '·' : '') + labs[labs.length - 1] : base;
+          const labs = []; for (let j = 0; j < i; j++) { const t = labels[j]; if (/[가-힣A-Za-z]/.test(t) && t.length <= 40 && !/\d{2,}/.test(t) && (!isLabelish(t) || titleOfText(t))) labs.push(t); }
+          const orgs = labs.filter(t => !isPerson(nrm(t)) && !titleOfText(t)), base = orgs.length ? orgs[orgs.length - 1] : '';
+          const lastL = labs.length ? labs[labs.length - 1] : '', lastT = lastL ? titleOfText(lastL) : '';
+          /* 번호 바로 앞이 사람 이름이면 부서·이름, 직책(과장·팀장·담당자)이면 부서·직책 */
+          const tail = lastL && isPerson(nrm(lastL)) ? lastL : (lastT && base ? lastT : '');
+          const lab = tail ? (base ? base + '·' : '') + tail : base;
           cells.push({ tbl, tc, val: tx, role: (faxcols.has(col) || (i > 0 && FAX_LAB(nrm(labels[i - 1])))) ? '팩스' : '전화', label: lab, base, hasfax: faxcols.size > 0, row: tcs, labels, i });
         });
       });
