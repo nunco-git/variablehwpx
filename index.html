@@ -513,7 +513,13 @@ const safeKey = k => k.replace(/[{}]/g, '').replace(/[\/.]/g, '·');
 /* ---------- 부서 앞뒤 단어 · 전화/팩스 빈칸 탐지 ---------- */
 const DEPT_SKIP_LAB = /부서장|부서원|부서별|부서간/;
 const isDeptLabel = t => { const n = nrm(t); return n.length > 0 && n.length <= 10 && /부서/.test(n) && !DEPT_SKIP_LAB.test(n); };
-const PHONE_LAB = n => n.length <= 14 && /^(담당자|직통|사무실|부서|대표|담당)?(전화번호|전화|연락처|TEL|Tel|tel|☎)(\(.*\))?[:：]?$/.test(n);
+const PHONE_LAB0 = n => n.length <= 14 && /^(담당자|직통|사무실|부서|대표|담당)?(전화번호|전화|연락처|TEL|Tel|tel|☎)(\(.*\))?[:：]?$/.test(n);
+/* 유선 · 무선 · 유선이나무선 · 휴대폰 … 이 들어간 짧은 칸 */
+const WIRE_RE = /유선|무선|휴대폰|휴대전화|핸드폰|이동전화/;
+const WIRE_LAB = n => n.length <= 20 && WIRE_RE.test(n) && n.replace(/유선|무선|휴대폰|휴대전화|핸드폰|이동전화|전화번호|전화|번호|연락처|직통|사무실|대표|담당자|담당|이나|또는|혹은|및|or|OR|[\s\/·,()（）:：~\-]/g, '') === '';
+const PHONE_LAB = n => PHONE_LAB0(n) || WIRE_LAB(n);
+/* 무선(휴대폰)만 가리키면 유선과 번호가 다르므로 변수 이름을 따로 둠 */
+const phoneKind = n => (/무선|휴대폰|휴대전화|핸드폰|이동전화/.test(n) && !/유선/.test(n)) ? '(무선)' : '';
 const FAX_LAB = n => n.length <= 14 && /^(팩스|FAX|Fax|fax)(번호)?(\(.*\))?[:：]?$/.test(n);
 const OTHER_LAB = /^(담당|담당자|직위|직급|직책|성명|이름|구분|비고|연번|번호|순번|업무|내용|명칭|기관|기관명|시설명|소속|계|합계)$/;
 const isLabelish = t => { const n = nrm(t); return isDeptLabel(t) || PHONE_LAB(n) || FAX_LAB(n) || OTHER_LAB.test(n); };
@@ -612,6 +618,7 @@ function blankPhoneOps(SC, X) {
     g.list.forEach(o => {
       if (hasTbl(o.tc)) return; const tx = cellText(o.tc); if (!tx) return; const n = nrm(tx);
       const role = PHONE_LAB(n) ? '전화' : FAX_LAB(n) ? '팩스' : null; if (!role) return;
+      const kind = role === '전화' ? phoneKind(n) : '';
       const nb = nbOf(g, o); let targets = [];
       if (emptyCell(nb.right)) targets = [nb.right];
       else if (emptyCell(nb.below) || (hdrOf(o) && phoneish(nb.below))) {
@@ -628,18 +635,18 @@ function blankPhoneOps(SC, X) {
         /* 앞쪽에서 이미 같은 「부서·이름」 번호 변수가 있으면 그 변수를 함께 씀 → 한 번만 입력 */
         let key;
         if (person) {
-          const full = safeKey((dn ? dn + '·' : '') + person), cands = [...vars.values()].filter(v => v.col === role);
+          const full = safeKey((dn ? dn + '·' : '') + person) + kind, cands = [...vars.values()].filter(v => v.col === role);
           const same = cands.find(v => normK(v.key) === normK(full));
-          const byName = !dn ? cands.filter(v => normK(v.key.split('·').pop()) === normK(person)) : [];
+          const byName = !dn ? cands.filter(v => normK(v.key.split('·').pop()) === normK(person + kind)) : [];
           key = same ? same.key : (byName.length === 1 ? byName[0].key : full);
-        } else key = dn || single || nextKey(role);
+        } else key = (dn || single) ? (dn || single) + kind : nextKey(role);
         const v = mk(key, role);
         ops.push({ type: 'cell', tc: cell.tc, v }); used.add(cell.tc);
         Array.from(cell.tc.getElementsByTagNameNS(HPNS, 'p')).forEach(p => cellP.add(p));
       });
     });
   });
-  const re = /(?<![가-힣])(전화번호|전화|연락처|TEL|Tel|팩스번호|팩스|FAX|Fax)\s*[:：]?\s*(_{2,}|…+|\.{3,}|\(\s*\)|（\s*）|\[\s*\])/g;
+  const re = /(?<![가-힣])(전화번호|전화|연락처|TEL|Tel|유선|무선|휴대폰|핸드폰|팩스번호|팩스|FAX|Fax)(?:번호|전화)?\s*[:：]?\s*(_{2,}|…+|\.{3,}|\(\s*\)|（\s*）|\[\s*\])/g;
   allP.forEach(([p, full]) => {
     if (cellP.has(p) || !full) return;
     for (const m of full.matchAll(re)) {
@@ -648,7 +655,7 @@ function blankPhoneOps(SC, X) {
       let op = subOpOf.get(p);
       if (op && op.subs.some(s => a < s.b && b > s.a)) continue;
       if (!op) { op = { type: 'sub', p, subs: [] }; ops.push(op); subOpOf.set(p, op); }
-      op.subs.push({ a, b, v: mk(single || nextKey(role), role) });
+      op.subs.push({ a, b, v: mk(single ? single + (role === '전화' ? phoneKind(m[1]) : '') : nextKey(role), role) });
     }
   });
 }
@@ -671,23 +678,25 @@ function parsePhoneBook(text) {
 function pbMatch(base, list) {
   const raw = String(base).replace(/@.*$/, ''), n = normK(raw);
   const r = list.find(x => x.n === n); if (r) return r;
+  const mob = /\(무선\)/.test(raw);
   /* 「부서·이름」 변수: 이름만 있는 줄과 짝지음 */
   if (raw.indexOf('·') >= 0) {
     const last = normK(raw.split('·').pop());
     const c = last.length >= 2 ? list.filter(x => x.n === last) : [];
     return c.length === 1 ? c[0] : null;
   }
+  if (mob) return null;
   const c = list.filter(x => x.n.length >= 3 && n.length >= 3 && !x.comp && (n.includes(x.n) || x.n.includes(n)));
   return c.length === 1 ? c[0] : null;
 }
 /* 문서 안에 이미 적힌 「부서명 + 전화/팩스번호」 쌍 수집 */
 function harvestBook(SC, allP, vars) {
   const m = new Map();
-  const put1 = (dept, role, num, comp) => {
+  const put1 = (dept, role, num, comp, strict) => {
     const n = normK(dept); if (!n || !num) return;
-    const r = m.get(n) || { dept, n, comp: !!comp, tel: '', fax: '', telC: false, faxC: false }; m.set(n, r);
+    const r = m.get(n) || { dept, n, comp: !!comp || /\(무선\)/.test(dept), tel: '', fax: '', telC: false, faxC: false }; m.set(n, r);
     const f = role === '팩스' ? 'fax' : 'tel';
-    if (!r[f]) r[f] = num; else if (r[f] !== num) r[f + 'C'] = true;   /* 같은 이름에 번호가 둘이면 충돌 → 자동 입력 안 함 */
+    if (!r[f]) r[f] = num; else if (strict && r[f] !== num) r[f + 'C'] = true;   /* 처음 나온 번호를 씀. 다만 사람 이름 없이 부서로만 묶은 열쇠는 사람마다 번호가 다르면 쓰지 않음 */
   };
   const numOf = x => {
     if (!x || hasTbl(x.tc)) return ''; const t = cellText(x.tc); if (!t) return '';
@@ -695,9 +704,10 @@ function harvestBook(SC, allP, vars) {
     return /[가-힣]/.test(t.replace(mm[0], '')) ? '' : mm[0];
   };
   /* 부서·이름 / 이름 / 부서 세 가지 열쇠로 모음 */
-  const put = (dept, person, role, num) => {
-    if (person) { put1((dept ? dept + '·' : '') + person, role, num, true); put1(person, role, num, true); }
-    if (dept) put1(dept, role, num);
+  const put = (dept, person, role, num, kind) => {
+    kind = kind || '';
+    if (person) { put1((dept ? dept + '·' : '') + person + kind, role, num, true); put1(person + kind, role, num, true); }
+    if (dept) put1(dept + kind, role, num, false, !!person);
   };
   SC.tinfo.forEach(({ g, depts }) => {
     const deptFor = (cell, strict) => {
@@ -716,7 +726,7 @@ function harvestBook(SC, allP, vars) {
         if (hdrRow(g, o)) { let x = g.map.get((nb.below.r + nb.below.rs) + ',' + o.c); while (x && numOf(x)) { targets.push(x); x = g.map.get((x.r + x.rs) + ',' + o.c); } }
       } else if (numOf(nb.left)) targets = [nb.left];
       else if (numOf(nb.above)) targets = [nb.above];
-      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = personOf(g, cell, ti > 0); if (d || p) put(d && d.n, p, role, numOf(cell)); });
+      targets.forEach((cell, ti) => { const d = deptFor(cell, ti > 0), p = personOf(g, cell, ti > 0); if (d || p) put(d && d.n, p, role, numOf(cell), phoneKind(n)); });
     });
   });
   /* 문단: "행정과 전화 041-830-2000" 처럼 알려진 부서명과 번호가 한 줄에 있는 경우 */
@@ -899,10 +909,10 @@ function startEditor(plan, sel, host, onState) {
     <p class="muted">체크한 항목만 변수로 바뀝니다. 아래 미리보기에서 색이 칠해진 글자가 변수가 될 자리입니다. 칸을 눌러 이 자리만 해제하거나, 글자를 드래그해서 새 변수를 추가할 수 있습니다.</p>
     <div class="row" style="margin:8px 0"><b>바로 바꾸기</b><input type="text" id="fr_f" placeholder="찾을 글자" style="flex:1 1 150px"><span>→</span><input type="text" id="fr_t" placeholder="바꿀 글자 (비우면 삭제)" style="flex:1 1 150px"><button type="button" id="fr_c">몇 곳?</button><button type="button" id="fr_r">모두 바꾸기</button><span class="muted" id="fr_m"></span></div>
     <details style="margin:8px 0"><summary style="cursor:pointer"><b>전화번호부 일괄 입력</b> <span class="muted">— 부서별 전화·팩스 변수에 한 번에 넣기</span></summary>
-    <p class="muted">엑셀에서 「부서명 / 전화번호 / 팩스번호」를 복사해 붙여넣으세요. 변수 이름(부서명)이 같은 전화·팩스 변수의 원래 값으로 입력됩니다.</p>
+    <p class="muted">문서에서 <b>처음 나온 번호</b>는 같은 부서·이름의 뒤쪽 빈칸에 자동으로 들어갑니다. 아래 붙여넣기는 문서에 번호가 없어 비어 있는 부서를 채울 때 쓰세요. 엑셀에서 「부서명 / 전화번호 / 팩스번호」를 복사해 붙여넣으면 변수 이름(부서명)이 같은 전화·팩스 변수의 원래 값으로 입력됩니다.</p>
     <textarea id="pb_t" rows="6" placeholder="행정과\t041-830-2000\t041-830-2009"></textarea>
     <div class="row"><label class="chk"><input type="checkbox" id="pb_ow"> 이미 값이 있는 변수도 덮어쓰기</label><button type="button" id="pb_go">채우기</button><span class="muted" id="pb_m"></span></div>
-    <div class="row" style="margin-top:6px"><button type="button" id="pb_doc">문서에 적힌 번호로 빈칸 채우기</button><span class="muted" id="pb_dm"></span></div></details>
+    <div class="row" style="margin-top:6px"><button type="button" id="pb_doc">문서에 적힌 번호로 다시 채우기</button><span class="muted" id="pb_dm"></span></div></details>
     <div class="ed2"><div class="edl"><div class="row"><input type="search" id="pf" placeholder="변수 찾기" style="flex:1 1 180px;max-width:260px"><button id="pa" type="button">보이는 것 모두 선택</button><button id="pn" type="button">보이는 것 모두 해제</button><span class="muted" id="ps"></span></div>
     <div class="tw" style="max-height:68vh;overflow:auto;margin-top:8px"><table id="vt"></table></div></div>
     <div class="edr"><h2>문서 미리보기</h2>
